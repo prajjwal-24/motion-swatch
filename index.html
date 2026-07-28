@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Motion Swatch</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header>
+  <div class="header-left">
+    <h1>Motion Swatch</h1>
+    <span class="tagline">Select an object. Apply a motion. Bring your art to life.</span>
+  </div>
+  <div class="header-center">
+    <div class="scene-tabs">
+      <button class="scene-tab active" data-scene="poster">Poster</button>
+      <button class="scene-tab" data-scene="scenery">Scenery</button>
+    </div>
+  </div>
+  <div class="header-right">
+    <button id="btn-play" class="play-btn">▶ Play</button>
+    <button id="btn-export-svg" class="subtle-btn">Export SVG</button>
+    <button id="btn-export-video" class="subtle-btn">Export video</button>
+    <button id="btn-upload-art" class="subtle-btn">Upload artwork</button>
+    <input type="file" id="art-input" accept="image/*,.svg" hidden>
+  </div>
+</header>
+
+<main>
+  <!-- ===== LEFT: MOTION LIBRARY ===== -->
+  <aside id="library-panel">
+    <h2>Motion Library</h2>
+    <div id="motion-list" class="chip-grid"></div>
+    <button id="btn-upload-motion" class="upload-btn">+ Capture motion from video</button>
+    <input type="file" id="motion-input" accept="video/*" hidden>
+    <div id="upload-status"></div>
+  </aside>
+
+  <!-- ===== CENTER: ARTWORK CANVAS ===== -->
+  <section id="canvas-section">
+    <div id="canvas-wrap">
+      <div id="artwork-container"></div>
+      <canvas id="selection-overlay"></canvas>
+    </div>
+    <div class="toolbar">
+      <span id="mode-hint" class="tool-label">SVG mode — click objects to select</span>
+      <span id="tool-controls" style="display:none; align-items:center; gap:8px;">
+        <span class="sep"></span>
+        <button id="btn-tool-rect" class="tool-btn active">□ Draw rectangle</button>
+      </span>
+      <span class="sep"></span>
+      <span class="tool-label">Regions:</span>
+      <div id="region-chips"></div>
+    </div>
+  </section>
+
+  <!-- ===== RIGHT: REGION INSPECTOR ===== -->
+  <aside id="inspector-panel">
+    <h2>Region Inspector</h2>
+    <div id="inspector-empty">
+      <p>Draw a selection on the artwork to create a region, then assign a motion to it.</p>
+    </div>
+    <div id="inspector-content" hidden>
+      <div class="insp-row">
+        <label>Name</label>
+        <input type="text" id="insp-name">
+      </div>
+      <div class="insp-row">
+        <label>Assigned Motion</label>
+        <div id="insp-motion-name" class="motion-badge">None</div>
+      </div>
+      <div class="insp-row">
+        <label>Speed <span id="insp-speed-val">1.0x</span></label>
+        <input type="range" id="insp-speed" min="0.1" max="3" step="0.1" value="1">
+      </div>
+      <div class="insp-row">
+        <label>Intensity <span id="insp-intensity-val">100%</span></label>
+        <input type="range" id="insp-intensity" min="0" max="2" step="0.05" value="1">
+      </div>
+      <div class="insp-row">
+        <label class="toggle-row"><input type="checkbox" id="insp-wave">
+          Cloth mode <span class="hint-inline">— ripple through the shape (flags, banners)</span></label>
+      </div>
+      <div class="insp-actions">
+        <button id="btn-remove-motion">Remove motion</button>
+        <button id="btn-delete-region" class="danger">Delete region</button>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  <div id="status">Draw a rectangle around a scene object to start.</div>
+</footer>
+
+<script src="js/flow.js"></script>
+<script src="js/distill.js"></script>
+<script src="js/motions.js"></script>
+<script src="js/scenery.js"></script>
+<script src="js/poster.js"></script>
+<script src="js/regions.js"></script>
+<script src="js/animate.js"></script>
+<script src="js/export.js"></script>
+<script src="js/videoexport.js"></script>
+<script src="js/extractviz.js"></script>
+<script src="js/multipick.js"></script>
+<script src="js/capture.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
