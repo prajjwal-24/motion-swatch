@@ -99,7 +99,7 @@ function chipLoop() {
     const [r, g, b] = hexToRgb(motion.color || '#7c6cff');
 
     // motion-blur fade instead of clear → dots drag trails
-    ctx.fillStyle = 'rgba(16,16,24,0.28)';
+    ctx.fillStyle = 'rgba(26,27,42,0.28)';
     ctx.fillRect(0, 0, S, S);
 
     const cell = S / (GRID_N + 1);
@@ -268,13 +268,11 @@ function renderChips() {
 //  Inspector
 // =========================================================================
 function showInspector(s) {
-  $('inspector-empty').hidden = true;
+  $('inspector-section').hidden = false;
   $('inspector-content').hidden = false;
   $('insp-name').value = s.name;
   $('insp-speed').value = s.speed; $('insp-speed-val').textContent = s.speed.toFixed(1) + 'x';
   $('insp-intensity').value = s.intensity; $('insp-intensity-val').textContent = Math.round(s.intensity * 100) + '%';
-  $('insp-wave').checked = !!s.waveMode;
-  $('insp-wave').disabled = s.kind !== 'svg';
   const badge = $('insp-motion-name');
   if (s.motionId) {
     const m = library.getById(s.motionId);
@@ -282,21 +280,11 @@ function showInspector(s) {
     badge.classList.add('assigned');
   } else { badge.textContent = 'None — select a motion'; badge.classList.remove('assigned'); }
 }
-function hideInspector() { $('inspector-empty').hidden = false; $('inspector-content').hidden = true; }
+function hideInspector() { $('inspector-section').hidden = true; $('inspector-content').hidden = true; }
 
 $('insp-name').addEventListener('change', () => { const s = sel.getActive(); if (s) { s.name = $('insp-name').value; renderChips(); if (sel.mode === 'svg') sel._renderSVGHighlights(); else sel.redraw(); } });
 $('insp-speed').addEventListener('input', () => { const s = sel.getActive(); if (s) { s.speed = parseFloat($('insp-speed').value); $('insp-speed-val').textContent = s.speed.toFixed(1) + 'x'; } });
 $('insp-intensity').addEventListener('input', () => { const s = sel.getActive(); if (s) { s.intensity = parseFloat($('insp-intensity').value); $('insp-intensity-val').textContent = Math.round(s.intensity * 100) + '%'; } });
-$('insp-wave').addEventListener('change', () => {
-  const s = sel.getActive();
-  if (!s || s.kind !== 'svg') return;
-  s.waveMode = $('insp-wave').checked;
-  // restore pristine geometry + clear cache so the mode switch is clean
-  s.wrap.setAttribute('transform', '');
-  for (const el of s.wrap.querySelectorAll('path[data-ms-d0]')) el.setAttribute('d', el.getAttribute('data-ms-d0'));
-  s._wave = null;
-  status(s.waveMode ? 'Cloth mode on — the shape itself will ripple.' : 'Cloth mode off — rigid motion.', true);
-});
 $('btn-remove-motion').onclick = () => { const s = sel.getActive(); if (s) { s.motionId = null; if (s.wrap) s.wrap.setAttribute('transform',''); if (s.floatEl) s.floatEl.style.transform=''; showInspector(s); renderChips(); if (sel.mode==='svg') sel._renderSVGHighlights(); else sel.redraw(); status('Motion removed.'); } };
 $('btn-delete-region').onclick = () => { sel.deleteActive(); renderChips(); const a = sel.getActive(); if (a) showInspector(a); else hideInspector(); status('Region deleted.'); };
 
@@ -315,6 +303,7 @@ $('btn-play').onclick = () => {
     return;
   }
   const playing = animator.toggle();
+  sel.setHighlightsHidden(playing);   // outlines only in pause state
   $('btn-play').textContent = playing ? '⏸ Pause' : '▶ Play';
   $('btn-play').classList.toggle('playing', playing);
   status(playing ? 'Playing.' : 'Paused.');
@@ -333,14 +322,14 @@ $('btn-export-video').onclick = async () => {
   if (!wasPlaying) animator.play();
   try {
     const blob = await exportVideo(sel, animator, {
-      seconds: 8, mode: 'reel',
+      seconds: 8, mode: 'flat',
       onProgress: p => { btn.textContent = p < 1 ? `Recording… ${Math.round(p * 100)}%` : 'Export video'; },
     });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'motion-swatch-reel.' + (blob.type.includes('mp4') ? 'mp4' : 'webm');
+    a.download = 'motion-swatch.' + (blob.type.includes('mp4') ? 'mp4' : 'webm');
     a.click(); URL.revokeObjectURL(a.href);
-    status('Video exported — vertical 1080×1920, ready for Reels.', true);
+    status('Video exported — 1600×1000, matches the artwork size.', true);
   } catch (err) {
     status('Video export failed: ' + err.message);
   }

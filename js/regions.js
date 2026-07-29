@@ -41,7 +41,14 @@ class SelectionManager {
     this.onSelected = null;
 
     this._svgClickHandler = null;
+    this.highlightsHidden = false;   // hide selection outlines during playback
     this._initRasterEvents();
+  }
+
+  // hide/show all selection outlines (used while animation is playing)
+  setHighlightsHidden(v) {
+    this.highlightsHidden = v;
+    if (this.mode === 'svg') this._renderSVGHighlights(); else this.redraw();
   }
 
   // ---- called by main whenever artwork changes ----
@@ -218,6 +225,7 @@ class SelectionManager {
     // remove old highlight layer
     let hl = this._svg.querySelector('#ms-highlights');
     if (hl) hl.remove();
+    if (this.highlightsHidden) return;   // no outlines while playing
     hl = document.createElementNS(SVGNS, 'g');
     hl.setAttribute('id', 'ms-highlights');
     hl.setAttribute('pointer-events', 'none');
@@ -376,7 +384,7 @@ class SelectionManager {
     // raster-mode highlights are on the canvas overlay
     const { width: W, height: H } = this.overlay;
     this.ctx.clearRect(0, 0, W, H);
-    if (this.mode !== 'raster') return;
+    if (this.mode !== 'raster' || this.highlightsHidden) return;
     this.selections.forEach((s, i) => {
       if (s.kind !== 'rect') return;
       const b = s.bounds, active = i === this.activeIdx;
