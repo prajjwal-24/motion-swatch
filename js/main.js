@@ -340,6 +340,7 @@ const EYE_ICON = '<svg viewBox="0 0 16 16" width="13" height="13"><path fill="cu
 
 // groups to show, treating the app's internal .ms-wrap as transparent
 function layerGroups(parent) {
+  if (parent.getAttribute && parent.getAttribute('data-layer-panel') === 'flat') return [];
   const out = [];
   for (const c of parent.children) {
     if (c.tagName.toLowerCase() !== 'g') continue;
@@ -432,6 +433,14 @@ $('btn-remove-motion').onclick = () => {
     s.wrap.setAttribute('transform', '');
     const canopy = s.wrap.querySelector('[data-motion-role="tree-canopy"]');
     if (canopy) canopy.removeAttribute('transform');
+  }
+  if (s._leaves) {
+    for (const lf of s._leaves) {
+      lf.el.removeAttribute('transform');
+      lf.el.style.opacity = '';
+    }
+    s._leaves = null;
+    s._leavesMotion = null;
   }
   if (s.floatEl) s.floatEl.style.transform = '';
   showInspector(s);
