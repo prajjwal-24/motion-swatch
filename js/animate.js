@@ -275,9 +275,9 @@ function glyphTransform(td, it, field, params, t, intensity) {
  * ramp(x) grows 0→1 from the anchored edge (pole side) to the free tip, so
  * the cloth stays pinned at the pole and whips at the end — like a real flag.
  */
-const WAVE_SAMPLES = 48;
-const WAVE_AMP_PX = 9;          // amplitude at amplitude=1, intensity=1
-const WAVE_CYCLES = 1.5;        // wavelengths across the object's width
+const WAVE_SAMPLES = 72;        // more samples so extra folds render smoothly
+const WAVE_AMP_PX = 12;         // amplitude at amplitude=1, intensity=1
+const WAVE_CYCLES = 2.6;        // wavelengths across the object's width (more folds = wavier)
 
 function buildWaveData(wrap) {
   const paths = [];
@@ -339,7 +339,11 @@ function waveD(pd, minX, width, A, k, phase, turb) {
     const [x0, y0] = pd.pts[i];
     const ramp = Math.pow((x0 - minX) / width, 1.15);
     const arg = phase - k * (x0 - minX);
-    const dy = A * ramp * Math.sin(arg) + turb * ramp * _noise(x0 * 0.11 + phase * 1.3);
+    // primary traveling fold + a faster, shallower second harmonic so the flag
+    // shows several overlapping ripples (wavier, like real wind-blown cloth)
+    const dy = A * ramp * Math.sin(arg)
+             + A * 0.32 * ramp * Math.sin(arg * 2.0 + 1.3)
+             + turb * ramp * _noise(x0 * 0.11 + phase * 1.3);
     const dx = A * 0.22 * ramp * Math.cos(arg);
     d += (i ? 'L' : 'M') + (x0 + dx).toFixed(2) + ',' + (y0 + dy).toFixed(2);
   }
