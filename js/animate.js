@@ -367,6 +367,10 @@ class Animator {
         this._applyClouds(s, motion, rt, intensity);
         continue;
       }
+      if (s.kind === 'svg' && /\briver|ripples?\b/i.test(s.name)) {
+        this._applyRiver(s, motion, rt, intensity);
+        continue;
+      }
 
       // ---- per-glyph text animation: letters ride the motion individually ----
       if (s.kind === 'svg' && s.wrap.querySelector('text')) {
@@ -588,6 +592,56 @@ class Animator {
     wrap.setAttribute('transform', '');
   }
 
+  /*
+   * River ripples: the Water Ripple preset has no captured trajectory field, so
+   * by default it would just rigidly shake the whole ripple group. Instead we
+   * DEFORM the ripple geometry with a smooth LAMINAR traveling wave — glassy
+   * downstream flow rather than choppy chop:
+   *
+   *   dy(x,y,t) = A · sin(k·x − 2πf·t + φ(y)) + small second harmonic
+   *   dx(...)   = a gentle along-stream shear so ripple crests slide downstream
+   *
+   * Long wavelength + low amplitude + zero turbulence = laminar. A slow phase
+   * offset per scanline (φ(y)) makes the sheet flow, not oscillate in lockstep.
+   * The deformation is applied to the SAME sampled-path machinery cloth uses
+   * (buildWaveData), but with a flow-tuned displacement instead of a flag whip.
+   */
+  _applyRiver(s, motion, t, intensity) {
+    const wrap = s.wrap;
+    if (!s._river) {
+      s._river = buildWaveData(wrap);       // sampled pristine geometry per <path>
+    }
+    if (!s._river) { wrap.setAttribute('transform', ''); return; }
+    const rv = s._river;
+    const width = Math.max(1, rv.maxX - rv.minX);
+    const height = Math.max(1, rv.maxY - rv.minY);
+    const p = motion.params || {};
+    // laminar tuning: long wavelength (few gentle crests across the width),
+    // slow drift, shallow amplitude. Scale mildly by the preset's amplitude so
+    // the Intensity slider still has a natural effect, but keep it calm.
+    const A = 3.4 * (0.6 + (p.amplitude || 0.2)) * intensity;   // vertical swell (units)
+    const k = 2 * Math.PI * 1.15 / width;                       // ~1 crest across the river
+    const f = 0.28 * (0.6 + (p.frequency || 1.0) * 0.5);        // slow downstream speed
+    const phase = 2 * Math.PI * f * t;
+    const flow = 5.0 * intensity;                               // along-stream crest slide
+    for (const pd of rv.paths) {
+      let d = '';
+      for (let i = 0; i < pd.pts.length; i++) {
+        const [x0, y0] = pd.pts[i];
+        // per-scanline phase offset → the surface flows downstream, not in lockstep
+        const yPhase = (y0 - rv.minY) / height * Math.PI * 1.3;
+        const arg = k * (x0 - rv.minX) - phase + yPhase;
+        // primary swell + a small, slower second harmonic for organic surface
+        const dy = A * Math.sin(arg) + A * 0.35 * Math.sin(arg * 0.5 + phase * 0.6);
+        // gentle downstream shear so crests glide along the current
+        const dx = flow * Math.cos(arg) * 0.5;
+        d += (i ? 'L' : 'M') + (x0 + dx).toFixed(2) + ',' + (y0 + dy).toFixed(2);
+      }
+      pd.el.setAttribute('d', pd.closed ? d + 'Z' : d);
+    }
+    wrap.setAttribute('transform', '');
+  }
+
   _reset() {
     for (const s of this.sel.selections) {
       if (s._leaves) {
@@ -602,6 +656,7 @@ class Animator {
           el.setAttribute('d', el.getAttribute('data-ms-d0'));
         }
         s._wave = null;
+        s._river = null;
         s._field = undefined;
         s._fieldMotion = null;
         // reset per-glyph transforms (glyph split itself is kept — harmless)
