@@ -350,6 +350,12 @@ class Animator {
         ? (s.center[0] * 0.01 + s.center[1] * 0.03)
         : (s.bounds.x * 0.01 + s.bounds.y * 0.03);
 
+      // ---- realistic falling leaves: each child leaf falls independently ----
+      if (s.kind === 'svg' && motion.params && motion.params.leafFall) {
+        this._applyLeafFall(s, motion, rt, intensity);
+        continue;
+      }
+
       // ---- per-glyph text animation: letters ride the motion individually ----
       if (s.kind === 'svg' && s.wrap.querySelector('text')) {
         if (s._text === undefined) s._text = buildTextData(s.wrap);
@@ -419,8 +425,59 @@ class Animator {
     }
   }
 
+  // deterministic pseudo-random in [0,1) from a leaf index + channel
+  _leafRnd(i, k) { const x = Math.sin(i * 12.9898 + k * 78.233) * 43758.5453; return x - Math.floor(x); }
+
+  /*
+   * Realistic falling leaves: instead of moving the whole group rigidly, each
+   * child leaf falls down a vertical corridor at its own speed, swaying and
+   * tumbling, and wraps back to the top (fading in/out to hide the reset).
+   * Reads as a continuous stream of leaves drifting to the ground.
+   */
+  _applyLeafFall(s, motion, t, intensity) {
+    const wrap = s.wrap;
+    if (!s._leaves || s._leavesMotion !== motion.id) {
+      const kids = [...wrap.querySelectorAll('path')];
+      const svg = wrap.ownerSVGElement;
+      const H = (svg && svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.height) || 1377;
+      s._corridor = { topY: H * 0.14, groundY: H * 0.80 };   // spawn line → ground line
+      s._leaves = kids.map((el, i) => {
+        const b = el.getBBox();
+        return {
+          el, cx: b.x + b.width / 2, cy: b.y + b.height / 2,
+          vy: 60 + this._leafRnd(i, 1) * 95,               // fall speed (units/s)
+          swayA: 12 + this._leafRnd(i, 2) * 30,            // horizontal sway amplitude
+          swayF: 0.35 + this._leafRnd(i, 3) * 0.7,         // sway frequency (Hz)
+          phase: this._leafRnd(i, 4) * Math.PI * 2,
+          rot0: this._leafRnd(i, 5) * 360,
+          rotV: (this._leafRnd(i, 6) - 0.5) * 170,         // tumble (deg/s)
+        };
+      });
+      s._leavesMotion = motion.id;
+    }
+    const { topY, groundY } = s._corridor;
+    const Hc = Math.max(1, groundY - topY);
+    const spd = intensity;
+    for (const lf of s._leaves) {
+      const start = lf.cy - topY;
+      const ph = (((start + lf.vy * t * spd) % Hc) + Hc) % Hc;   // 0..Hc, wraps
+      const dy = (topY + ph) - lf.cy;
+      const dx = lf.swayA * spd * Math.sin(lf.swayF * 2 * Math.PI * t + lf.phase);
+      const ang = lf.rot0 + lf.rotV * t;
+      const fin = Math.min(1, ph / (Hc * 0.07));                 // fade in near top
+      const fout = Math.min(1, (Hc - ph) / (Hc * 0.14));         // fade out near ground
+      lf.el.setAttribute('transform',
+        `translate(${dx.toFixed(2)} ${dy.toFixed(2)}) rotate(${ang.toFixed(1)} ${lf.cx.toFixed(1)} ${lf.cy.toFixed(1)})`);
+      lf.el.style.opacity = Math.max(0, Math.min(fin, fout)).toFixed(3);
+    }
+    wrap.setAttribute('transform', '');
+  }
+
   _reset() {
     for (const s of this.sel.selections) {
+      if (s._leaves) {
+        for (const lf of s._leaves) { lf.el.removeAttribute('transform'); lf.el.style.opacity = ''; }
+      }
       if (s.kind === 'svg' && s.wrap) {
         s.wrap.setAttribute('transform', '');
         // restore pristine geometry for wave-deformed paths

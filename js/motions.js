@@ -56,6 +56,13 @@ const MOTION_PRESETS = [
     params: { frequency: 0.5, amplitude: 0.3, direction: 0, turbulence: 0.25, damping: 0.3, phaseSpread: 0.8, driftX: 0, driftY: 0.5 },
   },
   {
+    id: 'autumn-fall',
+    name: 'Autumn Fall',
+    desc: 'Lazy downward drift with sideways sway — tuned for autumn poster leaves',
+    color: '#d97a2b',
+    params: { frequency: 0.38, amplitude: 0.42, direction: 270, turbulence: 0.32, damping: 0.08, phaseSpread: 0.85, driftX: -0.05, driftY: 0.9, leafFall: true },
+  },
+  {
     id: 'rising-smoke',
     name: 'Rising Smoke',
     desc: 'Slow upward drift with waver',

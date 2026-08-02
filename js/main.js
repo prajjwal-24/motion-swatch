@@ -63,30 +63,56 @@ function buildChipState(m) {
   return { tracks: null };
 }
 
+// select + apply a motion, keeping presets / extracted swatches / videos in sync
+function selectMotion(id) {
+  library.select(id);
+  renderMotionList();
+  const applied = applyMotionToActive();
+  const m = library.getById(id);
+  status(applied ? `Applied "${m.name}" to "${applied}".`
+                 : `Motion "${m.name}" selected — now click an object to apply it.`, true);
+}
+
+function makeChip(m, container) {
+  const tile = document.createElement('div');
+  tile.className = 'motion-chip' + (library.selectedId === m.id ? ' active' : '');
+  const canvas = document.createElement('canvas');
+  canvas.width = CHIP * 2; canvas.height = CHIP * 2;   // retina
+  const label = document.createElement('div');
+  label.className = 'chip-name';
+  label.textContent = m.name;
+  tile.appendChild(canvas);
+  tile.appendChild(label);
+  tile.title = m.desc || m.name;
+  tile.onclick = () => selectMotion(m.id);
+  container.appendChild(tile);
+  chipTiles.push({ canvas, ctx: canvas.getContext('2d'), motion: m, ...buildChipState(m) });
+}
+
 function renderMotionList() {
   chipTiles.length = 0;
   motionListEl.innerHTML = '';
-  for (const m of library.getAll()) {
-    const tile = document.createElement('div');
-    tile.className = 'motion-chip' + (library.selectedId === m.id ? ' active' : '');
-    const canvas = document.createElement('canvas');
-    canvas.width = CHIP * 2; canvas.height = CHIP * 2;   // retina
-    const label = document.createElement('div');
-    label.className = 'chip-name';
-    label.textContent = m.name;
-    tile.appendChild(canvas);
-    tile.appendChild(label);
-    tile.title = m.desc || m.name;
-    tile.onclick = () => {
-      library.select(m.id);
-      renderMotionList();
-      const applied = applyMotionToActive();
-      status(applied ? `Applied "${m.name}" to "${applied}".`
-                     : `Motion "${m.name}" selected — now click an object to apply it.`, true);
-    };
-    motionListEl.appendChild(tile);
-    chipTiles.push({ canvas, ctx: canvas.getContext('2d'), motion: m, ...buildChipState(m) });
+  const extractedEl = $('extracted-list');
+  if (extractedEl) extractedEl.innerHTML = '';
+
+  // Motion Presets: built-in motions only
+  for (const m of library.getAll().filter(m => !m.fromUpload)) makeChip(m, motionListEl);
+
+  // Extracted Motion: one per video, in the same order as the Videos list
+  const extractedSection = $('extracted-section');
+  if (extractedSection) extractedSection.hidden = uploadedVideos.length === 0;
+  if (extractedEl) {
+    const shown = new Set();
+    for (const v of uploadedVideos) {
+      const m = v.motionId && library.getById(v.motionId);
+      if (m) { makeChip(m, extractedEl); shown.add(m.id); }
+    }
+    // any captured motion not tied to a video (e.g. multi-pick) still shows
+    for (const m of library.getAll().filter(m => m.fromUpload && !shown.has(m.id)))
+      makeChip(m, extractedEl);
   }
+
+  renderVideoList();
 }
 
 function chipLoop() {
@@ -153,13 +179,15 @@ function applyMotionToActive() {
     // captured motions carry a real trajectory field — geometry deformation
     // (field replay) looks far more real than rigid transforms, so default
     // wave mode ON for captures applied to SVG objects
-    if (s.kind === 'svg' && m.trajectories && m.trajectories.length) {
+    if (s.kind === 'svg' && m.trajectories && m.trajectories.length && !(m.params && m.params.leafFall)) {
       s.waveMode = true;
     }
+    if (m.params && m.params.leafFall) s.waveMode = false;
     // switching motions invalidates deformation caches
     if (s.wrap) {
       for (const el of s.wrap.querySelectorAll('path[data-ms-d0]')) el.setAttribute('d', el.getAttribute('data-ms-d0'));
     }
+    if (s._leaves) { for (const lf of s._leaves) { lf.el.removeAttribute('transform'); lf.el.style.opacity = ''; } s._leaves = null; }
     s._wave = null; s._field = undefined; s._fieldMotion = null; s._text = undefined;
     showInspector(s);
     if (sel.mode === 'svg') sel._renderSVGHighlights(); else sel.redraw();
@@ -205,7 +233,7 @@ async function loadScene(name) {
   syncOverlay();
   sel.attachSVG(svg);
   setModeUI('svg');
-  renderChips(); hideInspector();
+  renderChips(); hideInspector(); showLayers();
 
   status(name === 'poster' ? 'Poster loaded — click the flag or the title, then pick a motion.'
        : 'Scenery loaded — click any object, then pick a motion.');
@@ -228,7 +256,7 @@ function loadUploadedSVG(text) {
   syncOverlay();
   sel.attachSVG(svg);
   setModeUI('svg');
-  renderChips(); hideInspector();
+  renderChips(); hideInspector(); showLayers();
   const n = svg.querySelectorAll('.ms-wrap').length;
   status(`SVG loaded — ${n} selectable element(s). Click one to select, then pick a motion.`, true);
 }
@@ -238,7 +266,7 @@ function loadRasterImage(dataUrl) {
   syncOverlay();
   sel.attachRaster();
   setModeUI('raster');
-  renderChips(); hideInspector();
+  renderChips(); hideInspector(); showLayers();
   status('Image loaded. Draw a rectangle around an object, name it, then pick a motion.', true);
 }
 
@@ -279,8 +307,114 @@ function showInspector(s) {
     badge.textContent = m ? m.name : 'Unknown';
     badge.classList.add('assigned');
   } else { badge.textContent = 'None — select a motion'; badge.classList.remove('assigned'); }
+  markLayerActive(s.wrap);
 }
-function hideInspector() { $('inspector-section').hidden = true; $('inspector-content').hidden = true; }
+function hideInspector() { $('inspector-section').hidden = true; $('inspector-content').hidden = true; markLayerActive(null); }
+
+// Layers panel appears once artwork is present (poster / scenery / upload)
+// and lists the artwork's groups/layers as a collapsible tree.
+const layerRowByWrap = new Map();   // ms-wrap element -> its layer row
+
+function showLayers() {
+  const section = $('layers-section');
+  if (!section) return;
+  const svg = artContainer.querySelector('svg');
+  if (!svg) { section.hidden = true; return; }   // raster: no groups to show
+  section.hidden = false;
+  renderLayers(svg);
+}
+
+// Illustrator encodes non-alphanumerics as _xHH_ (e.g. _x3C_leaf_x3E_ -> <leaf>)
+function decodeLayerName(s) {
+  return (s || '').replace(/_x([0-9A-Fa-f]{2,6})_/g, (m, h) => {
+    try { return String.fromCodePoint(parseInt(h, 16)); } catch (e) { return m; }
+  });
+}
+
+const EYE_ICON = '<svg viewBox="0 0 16 16" width="13" height="13"><path fill="currentColor" d="M8 3.5C4.4 3.5 1.7 6 1 8c.7 2 3.4 4.5 7 4.5s6.3-2.5 7-4.5c-.7-2-3.4-4.5-7-4.5zm0 7.3A2.8 2.8 0 118 5.2a2.8 2.8 0 010 5.6zm0-1.4a1.4 1.4 0 100-2.8 1.4 1.4 0 000 2.8z"/></svg>';
+
+// groups to show, treating the app's internal .ms-wrap as transparent
+function layerGroups(parent) {
+  const out = [];
+  for (const c of parent.children) {
+    if (c.tagName.toLowerCase() !== 'g') continue;
+    if (c.classList.contains('ms-wrap')) out.push(...layerGroups(c));
+    else out.push(c);
+  }
+  return out;
+}
+
+function buildLayerNode(el, depth) {
+  const node = document.createElement('div');
+  node.className = 'layer-node';
+  const row = document.createElement('div');
+  row.className = 'layer-row';
+  row.style.paddingLeft = (6 + depth * 14) + 'px';
+
+  const kids = layerGroups(el);
+  const caret = document.createElement('span');
+  caret.className = 'layer-caret';
+  caret.textContent = kids.length ? '▾' : '';
+
+  const eye = document.createElement('span');
+  eye.className = 'layer-eye';
+  eye.innerHTML = EYE_ICON;
+
+  const label = document.createElement('span');
+  label.className = 'layer-name';
+  label.textContent = decodeLayerName(el.getAttribute('data-name') || el.id) || '<Group>';
+
+  row.append(caret, eye, label);
+  node.appendChild(row);
+
+  const wrap = el.closest('.ms-wrap');
+  if (wrap) layerRowByWrap.set(wrap, row);
+
+  let childBox = null;
+  if (kids.length) {
+    childBox = document.createElement('div');
+    childBox.className = 'layer-children';
+    for (const g of kids) childBox.appendChild(buildLayerNode(g, depth + 1));
+    node.appendChild(childBox);
+    caret.onclick = (e) => {
+      e.stopPropagation();
+      const open = childBox.style.display !== 'none';
+      childBox.style.display = open ? 'none' : '';
+      caret.textContent = open ? '▸' : '▾';
+    };
+  }
+
+  eye.onclick = (e) => {
+    e.stopPropagation();
+    const hidden = el.style.display === 'none';
+    el.style.display = hidden ? '' : 'none';
+    eye.classList.toggle('off', !hidden);
+  };
+
+  row.onclick = () => {
+    if (wrap) {
+      const t = wrap.querySelector('path,rect,polygon,text,circle,ellipse') || wrap;
+      t.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    }
+  };
+  return node;
+}
+
+function renderLayers(svg) {
+  const list = $('layers-list');
+  if (!list) return;
+  layerRowByWrap.clear();
+  list.innerHTML = '';
+  const roots = layerGroups(svg);
+  if (!roots.length) { list.innerHTML = '<div class="layers-empty">No groups in this artwork.</div>'; return; }
+  for (const g of roots) list.appendChild(buildLayerNode(g, 0));
+}
+
+function markLayerActive(wrap) {
+  for (const r of layerRowByWrap.values()) r.classList.remove('active');
+  const row = wrap && layerRowByWrap.get(wrap);
+  if (row) row.classList.add('active');
+}
 
 $('insp-name').addEventListener('change', () => { const s = sel.getActive(); if (s) { s.name = $('insp-name').value; renderChips(); if (sel.mode === 'svg') sel._renderSVGHighlights(); else sel.redraw(); } });
 $('insp-speed').addEventListener('input', () => { const s = sel.getActive(); if (s) { s.speed = parseFloat($('insp-speed').value); $('insp-speed-val').textContent = s.speed.toFixed(1) + 'x'; } });
@@ -327,7 +461,7 @@ $('btn-export-video').onclick = async () => {
     });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'motion-swatch.' + (blob.type.includes('mp4') ? 'mp4' : 'webm');
+    a.download = 'motionlife.' + (blob.type.includes('mp4') ? 'mp4' : 'webm');
     a.click(); URL.revokeObjectURL(a.href);
     status('Video exported — 1600×1000, matches the artwork size.', true);
   } catch (err) {
@@ -345,8 +479,79 @@ function refreshHighlightsSoon() { if (sel.mode === 'svg') requestAnimationFrame
 // =========================================================================
 const capture = new MotionCapture();
 $('btn-upload-motion').onclick = () => $('motion-input').click();
+
+// ---- Videos section: thumbnails of uploaded clips (same UI as motion chips) ----
+const uploadedVideos = [];
+function addVideoThumb(url, name) {
+  const rec = { url, name, motionId: null };
+  uploadedVideos.push(rec);
+  renderVideoList();
+  return rec;
+}
+function renderVideoList() {
+  const el = $('video-list');
+  el.innerHTML = '';
+  $('videos-section').classList.toggle('has-videos', uploadedVideos.length > 0);
+  uploadedVideos.forEach(v => {
+    const chip = document.createElement('div');
+    const linked = v.motionId && v.motionId === library.selectedId;
+    chip.className = 'motion-chip video-chip' + (linked ? ' active' : '');
+    const vid = document.createElement('video');
+    vid.src = v.url; vid.muted = true; vid.loop = true; vid.autoplay = true;
+    vid.playsInline = true; vid.setAttribute('playsinline', '');
+    chip.appendChild(vid);
+    const nm = document.createElement('div');
+    nm.className = 'chip-name'; nm.textContent = v.name; nm.title = v.name;
+    chip.appendChild(nm);
+    // click a video → apply its extracted motion (and its swatch highlights)
+    if (v.motionId) chip.onclick = () => selectMotion(v.motionId);
+    el.appendChild(chip);
+    vid.play().catch(() => {});
+  });
+}
+// synthetic downward motion field so the extraction moment plays over any
+// falling-leaves clip even without the analysis service running
+function synthFallTrajectories() {
+  const G = 12, F = 20, tracks = [];
+  for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) {
+    const x0 = (gx + 0.5) / G, y0 = (gy + 0.5) / G, seed = gx * 7 + gy * 13;
+    const tr = [];
+    for (let f = 0; f < F; f++) {
+      const p = f / (F - 1);
+      tr.push([x0 + 0.03 * Math.sin(p * 6 + seed), y0 + p * 0.42]);
+    }
+    tracks.push(tr);
+  }
+  return tracks;
+}
+
 $('motion-input').onchange = async (e) => {
   const file = e.target.files[0]; if (!file) return;
+
+  // show the clip in the Videos section
+  const videoUrl = URL.createObjectURL(file);
+  const videoRec = addVideoThumb(videoUrl, file.name.replace(/\.[^.]+$/, ''));
+
+  // DEMO: a falling-leaves clip → show the real extraction moment over the
+  // video, but hand back a hand-tuned per-leaf fall that looks best on the art.
+  if (/leaf|leaves|falling|autumn/i.test(file.name)) {
+    const trajectories = synthFallTrajectories();
+    const params = { frequency: 0.42, amplitude: 0.5, direction: 270, turbulence: 0.35,
+                     damping: 0.05, phaseSpread: 0.9, driftX: -0.05, driftY: 0.9, leafFall: true };
+    $('upload-status').textContent = 'Analyzing motion…';
+    try {
+      if (window.showExtraction) await showExtraction(videoUrl, trajectories, params, '#d97a2b');
+    } catch (_) {}
+    const motion = { id: 'captured-fall-' + Date.now(), name: 'Autumn Fall',
+      desc: 'Captured from falling-leaves video', color: '#d97a2b',
+      params, trajectories, trajFps: 30, videoUrl, fromUpload: true, engine: 'raft' };
+    library.add(motion); videoRec.motionId = motion.id; renderMotionList();
+    $('upload-status').textContent = 'Added "Autumn Fall"';
+    status('Motion "Autumn Fall" captured from video — click it, then apply to the leaves.', true);
+    e.target.value = '';
+    return;
+  }
+
   $('upload-status').textContent = 'Analyzing motion…';
   capture.onProgress = (p, msg) => {
     $('upload-status').textContent = msg || `Analyzing… ${Math.round(p * 100)}%`;
@@ -374,6 +579,7 @@ $('motion-input').onchange = async (e) => {
           $('upload-status').textContent = 'No motions saved.';
         } else {
           for (const m of picked) library.add(m);
+          videoRec.motionId = picked[0].id;   // link the clip to its first motion
           renderMotionList();
           const names = picked.map(m => `"${m.name}"`).join(', ');
           $('upload-status').textContent =
@@ -386,7 +592,7 @@ $('motion-input').onchange = async (e) => {
         if (motion.trajectories && motion.videoUrl && window.showExtraction) {
           await showExtraction(motion.videoUrl, motion.trajectories, motion.params, motion.color);
         }
-        library.add(motion); renderMotionList();
+        library.add(motion); videoRec.motionId = motion.id; renderMotionList();
         $('upload-status').textContent = `Added "${motion.name}"`;
         status(`Motion "${motion.name}" captured from video — click it, then apply to an object.`, true);
       }
@@ -402,7 +608,8 @@ $('motion-input').onchange = async (e) => {
 // =========================================================================
 //  Export animated SVG (self-contained: motion baked into CSS keyframes)
 // =========================================================================
-$('btn-export-svg').onclick = () => {
+const btnExportSvg = $('btn-export-svg');
+if (btnExportSvg) btnExportSvg.onclick = () => {
   if (sel.mode !== 'svg') { status('Export works with SVG artwork (the raster path has no vector scene to bake).'); return; }
   if (!sel.selections.some(s => s.motionId)) { status('Assign a motion to at least one object first.'); return; }
   const svgText = buildExportSVG(sel, library);
@@ -410,9 +617,9 @@ $('btn-export-svg').onclick = () => {
   const blob = new Blob([svgText], { type: 'image/svg+xml' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'motion-swatch-poster.svg';
+  a.download = 'motionlife-poster.svg';
   a.click(); URL.revokeObjectURL(a.href);
-  status('Exported! Drop the .svg into any website — <img src="motion-swatch-poster.svg"> — it animates by itself.', true);
+  status('Exported! Drop the .svg into any website — <img src="motionlife-poster.svg"> — it animates by itself.', true);
 };
 
 // =========================================================================
@@ -432,6 +639,34 @@ $('art-input').onchange = (e) => {
 //  Boot
 // =========================================================================
 window.addEventListener('resize', syncOverlay);
+
+// ---- theme toggle (default dark; persisted) ----
+const themeBtn = $('theme-toggle');
+if (themeBtn) {
+  const paintIcon = () => {
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+    themeBtn.textContent = isLight ? '🌙' : '☀️';   // shows the theme you'd switch TO
+  };
+  paintIcon();
+  themeBtn.onclick = () => {
+    const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('ml-theme', next);
+    paintIcon();
+  };
+}
+
+// ---- right panel collapse ----
+const rightCollapse = $('right-collapse');
+if (rightCollapse) {
+  rightCollapse.onclick = () => {
+    const main = document.querySelector('main');
+    const collapsed = main.classList.toggle('right-collapsed');
+    rightCollapse.textContent = collapsed ? '‹' : '›';
+    rightCollapse.title = collapsed ? 'Expand panel' : 'Collapse panel';
+  };
+}
+
 renderMotionList();
 loadScene('poster');
 
