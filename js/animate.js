@@ -350,6 +350,12 @@ class Animator {
         ? (s.center[0] * 0.01 + s.center[1] * 0.03)
         : (s.bounds.x * 0.01 + s.bounds.y * 0.03);
 
+      // Keep dense canopy artwork intact; only sway its selectable overlay.
+      if (s.kind === 'svg' && s.wrap.querySelector('[data-motion-role="tree-canopy"]')) {
+        this._applyTreeLeaves(s, motion, rt, intensity);
+        continue;
+      }
+
       // ---- realistic falling leaves: each child leaf falls independently ----
       if (s.kind === 'svg' && motion.params && motion.params.leafFall) {
         this._applyLeafFall(s, motion, rt, intensity);
@@ -369,6 +375,10 @@ class Animator {
       }
       if (s.kind === 'svg' && /\briver|ripples?\b/i.test(s.name)) {
         this._applyRiver(s, motion, rt, intensity);
+        continue;
+      }
+      if (s.kind === 'svg' && /\bboat|rowboat|canoe|ferry|ship\b/i.test(s.name)) {
+        this._applyBoat(s, motion, rt, intensity);
         continue;
       }
 
@@ -443,6 +453,39 @@ class Animator {
 
   // deterministic pseudo-random in [0,1) from a leaf index + channel
   _leafRnd(i, k) { const x = Math.sin(i * 12.9898 + k * 78.233) * 43758.5453; return x - Math.floor(x); }
+
+  /*
+   * Tree canopy: preserve the detailed silhouettes and sway the overlay around
+   * a low pivot. The static source beneath it restores any area the wind opens.
+   */
+  _applyTreeLeaves(s, motion, t, intensity) {
+    const wrap = s.wrap;
+    const canopy = wrap.querySelector('[data-motion-role="tree-canopy"]');
+    if (!canopy) return;
+    if (!s._treeLeaves || s._treeLeaves.el !== canopy) {
+      const b = canopy.getBBox();
+      s._treeLeaves = {
+        el: canopy,
+        px: b.x + b.width * 0.78,
+        py: b.y + b.height * 0.97,
+      };
+    }
+    const p = motion.params || {};
+    const frequency = Number.isFinite(p.frequency) ? p.frequency : 0.4;
+    const amplitude = Number.isFinite(p.amplitude) ? p.amplitude : 0.45;
+    const phase = 2 * Math.PI * Math.max(0.12, Math.min(0.65, frequency)) * t;
+    const primary = Math.sin(phase);
+    const harmonic = Math.sin(phase * 2);
+    const reach = 2.5 + Math.max(0, Math.min(1, amplitude)) * 4;
+    const dx = reach * intensity * (primary + harmonic * 0.16);
+    const dy = 0.55 * intensity * harmonic;
+    const angle = 0.42 * intensity * (primary + harmonic * 0.1);
+    const { px, py } = s._treeLeaves;
+    canopy.setAttribute('transform',
+      `translate(${dx.toFixed(2)} ${dy.toFixed(2)}) ` +
+      `rotate(${angle.toFixed(3)} ${px.toFixed(1)} ${py.toFixed(1)})`);
+    wrap.setAttribute('transform', '');
+  }
 
   /*
    * Realistic falling leaves: instead of moving the whole group rigidly, each
@@ -677,8 +720,41 @@ class Animator {
     wrap.setAttribute('transform', '');
   }
 
+  /*
+   * Boat: a rigid hull shouldn't ripple like water — but it should FLOAT on the
+   * ripples. Replicate the water-ripple rhythm as a gentle rigid BOB (rise/fall)
+   * plus a slow ROCK (tilt about the waterline), like the moored boat in the
+   * reference night clip. The bob/rock share the river's slow frequency and low
+   * amplitude, so the boat reads as riding the same ripples the surface shows.
+   * A small phase offset between bob and rock keeps it from looking mechanical.
+   */
+  _applyBoat(s, motion, t, intensity) {
+    const wrap = s.wrap;
+    if (!s._boat) {
+      const b = wrap.getBBox();
+      s._boat = {
+        // pivot at the waterline: horizontal center, near the bottom of the hull
+        px: b.x + b.width / 2,
+        py: b.y + b.height * 0.82,
+      };
+    }
+    const p = motion.params || {};
+    // match the river's laminar cadence so boat + water feel coupled
+    const f = 0.28 * (0.6 + (p.frequency || 1.0) * 0.5);   // same base as _applyRiver
+    const amp = (0.6 + (p.amplitude || 0.2));
+    const bob = 7.0 * amp * intensity * Math.sin(2 * Math.PI * f * t);          // vertical rise/fall
+    const rock = 1.4 * amp * intensity * Math.sin(2 * Math.PI * f * 0.85 * t + 0.7); // tilt (deg)
+    const bp = s._boat;
+    wrap.setAttribute('transform',
+      `translate(0 ${bob.toFixed(2)}) rotate(${rock.toFixed(3)} ${bp.px.toFixed(1)} ${bp.py.toFixed(1)})`);
+  }
+
   _reset() {
     for (const s of this.sel.selections) {
+      if (s._treeLeaves) {
+        s._treeLeaves.el.removeAttribute('transform');
+        s._treeLeaves = null;
+      }
       if (s._leaves) {
         for (const lf of s._leaves) { lf.el.removeAttribute('transform'); lf.el.style.opacity = ''; }
       }
@@ -692,6 +768,7 @@ class Animator {
         }
         s._wave = null;
         s._river = null;
+        s._boat = null;
         s._field = undefined;
         s._fieldMotion = null;
         // reset per-glyph transforms (glyph split itself is kept — harmless)
