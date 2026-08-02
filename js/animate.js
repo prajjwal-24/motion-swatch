@@ -497,33 +497,52 @@ class Animator {
     const wrap = s.wrap;
     if (!s._birds || s._birdsMotion !== motion.id) {
       const kids = [...wrap.querySelectorAll('path')];
+      const svg = wrap.ownerSVGElement;
+      const vb = (svg && svg.viewBox && svg.viewBox.baseVal) || { width: 1121.71, height: 1121.73 };
+      // travel corridor: the full sky width plus a margin on each side, so a
+      // bird flies right across the frame, exits, and wraps back in the other
+      // side (fading at the edges to hide the reset — like a real flock passing)
+      s._birdCorridor = { W: vb.width, margin: vb.width * 0.18 };
       s._birds = kids.map((el, i) => {
         const b = el.getBBox();
         return {
-          el, cx: b.x + b.width / 2, cy: b.y + b.height / 2,
+          el, cx: b.x + b.width / 2, cy: b.y + b.height / 2, x0: b.x,
           flapF: 2.1 + this._leafRnd(i, 1) * 1.3,          // 2.1–3.4 Hz wingbeat
           phase: this._leafRnd(i, 2) * Math.PI * 2,        // desync the flock
           amp: 0.16 + this._leafRnd(i, 3) * 0.10,          // per-bird flap depth
-          driftF: 0.05 + this._leafRnd(i, 4) * 0.05,       // slow glide freq
-          driftPh: this._leafRnd(i, 5) * Math.PI * 2,
+          vx: 30 + this._leafRnd(i, 4) * 34,               // travel speed (units/s)
+          bobA: 5 + this._leafRnd(i, 5) * 9,               // gentle vertical waver
+          bobF: 0.18 + this._leafRnd(i, 6) * 0.22,
+          bobPh: this._leafRnd(i, 0) * Math.PI * 2,
         };
       });
       s._birdsMotion = motion.id;
     }
-    // gentle shared flock glide (viewBox units, small + bounded)
-    const GLIDE_X = 26, GLIDE_Y = 8;
+    // birds soar LEFTWARD across the open sky (toward the mountains); when one
+    // passes the left margin it wraps around to re-enter from the right.
+    const { W, margin } = s._birdCorridor;
+    const span = W + 2 * margin;
+    const spd = intensity;
     for (const bd of s._birds) {
-      // wing flap: vertical scale oscillates 1±amp about the bird's center.
-      // "just natural" → keep amp small and clamp so wings never invert.
-      const flap = 1 - bd.amp * intensity * (0.5 + 0.5 * Math.sin(2 * Math.PI * bd.flapF * t + bd.phase));
+      // continuous travel, wrapped into the corridor
+      const travel = ((bd.vx * t * spd) % span + span) % span;   // 0..span, wraps
+      const gx = -travel;                                        // move left
+      // wrap the drawn position so exiting left re-enters from the right
+      let x = bd.x0 + gx;
+      while (x < -margin) x += span;
+      const dx = x - bd.x0;
+      const dy = bd.bobA * Math.sin(2 * Math.PI * bd.bobF * t + bd.bobPh);
+      // fade near the corridor edges so the wrap is invisible
+      const edge = Math.min(x + margin, (W + margin) - x);       // dist to nearer edge
+      const fade = Math.max(0, Math.min(1, edge / (margin * 0.6)));
+      // wing flap: vertical scale oscillates about the bird's center
+      const flap = 1 - bd.amp * spd * (0.5 + 0.5 * Math.sin(2 * Math.PI * bd.flapF * t + bd.phase));
       const sy = Math.max(0.6, flap);
-      // slow independent glide so the flock drifts without leaving the frame
-      const gx = GLIDE_X * intensity * Math.sin(2 * Math.PI * bd.driftF * t + bd.driftPh);
-      const gy = GLIDE_Y * intensity * Math.sin(2 * Math.PI * bd.driftF * 0.7 * t + bd.driftPh * 1.7);
       bd.el.setAttribute('transform',
-        `translate(${gx.toFixed(2)} ${gy.toFixed(2)}) ` +
+        `translate(${dx.toFixed(2)} ${dy.toFixed(2)}) ` +
         `translate(${bd.cx.toFixed(1)} ${bd.cy.toFixed(1)}) scale(1 ${sy.toFixed(3)}) ` +
         `translate(${(-bd.cx).toFixed(1)} ${(-bd.cy).toFixed(1)})`);
+      bd.el.style.opacity = fade.toFixed(3);
     }
     wrap.setAttribute('transform', '');
   }
@@ -573,7 +592,7 @@ class Animator {
       if (s._leaves) {
         for (const lf of s._leaves) { lf.el.removeAttribute('transform'); lf.el.style.opacity = ''; }
       }
-      if (s._birds) { for (const bd of s._birds) bd.el.removeAttribute('transform'); s._birds = null; s._birdsMotion = null; }
+      if (s._birds) { for (const bd of s._birds) { bd.el.removeAttribute('transform'); bd.el.style.opacity = ''; } s._birds = null; s._birdsMotion = null; }
       if (s._clouds) { for (const cd of s._clouds) cd.el.removeAttribute('transform'); s._clouds = null; s._cloudsMotion = null; }
       if (s.kind === 'svg' && s.wrap) {
         s.wrap.setAttribute('transform', '');
