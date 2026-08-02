@@ -563,30 +563,65 @@ class Animator {
    */
   _applyClouds(s, motion, t, intensity) {
     const wrap = s.wrap;
+    const CLOUD_SAMPLES = 64;
     if (!s._clouds || s._cloudsMotion !== motion.id) {
       const kids = [...wrap.querySelectorAll('path')];
       const svg = wrap.ownerSVGElement;
       const vbW = (svg && svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width) || 1121.71;
       const MARGIN = 8;
       s._clouds = kids.map((el, i) => {
+        // remember pristine geometry so we can restore/rebuild each frame
+        let d0 = el.getAttribute('data-ms-d0');
+        if (!d0) { d0 = el.getAttribute('d'); el.setAttribute('data-ms-d0', d0); }
+        else el.setAttribute('d', d0);
         const b = el.getBBox();
+        // sample the cloud outline into points so we can gently billow the edge
+        let pts = null;
+        const len = el.getTotalLength ? el.getTotalLength() : 0;
+        if (len) {
+          pts = [];
+          for (let k = 0; k <= CLOUD_SAMPLES; k++) {
+            const pt = el.getPointAtLength(len * k / CLOUD_SAMPLES);
+            pts.push([pt.x, pt.y]);
+          }
+        }
         const roomLeft  = Math.max(0, b.x - MARGIN);
         const roomRight = Math.max(0, vbW - (b.x + b.width) - MARGIN);
-        // travel amplitude: gentle, but never enough to leave the canvas.
-        // cap at 34 units and at whichever side has less room.
         const amp = Math.min(34, roomLeft, roomRight);
         return {
-          el,
-          amp: amp * (0.7 + this._leafRnd(i, 5) * 0.3),    // slight per-cloud variety
-          driftF: 0.010 + this._leafRnd(i, 1) * 0.010,     // extremely slow (0.010–0.020 Hz)
-          driftPh: this._leafRnd(i, 2) * Math.PI * 2,      // stagger start positions
+          el, pts, closed: /z\s*$/i.test(d0),
+          cx: b.x + b.width / 2, cy: b.y + b.height / 2,
+          w: Math.max(1, b.width), h: Math.max(1, b.height),
+          amp: amp * (0.7 + this._leafRnd(i, 5) * 0.3),    // drift amplitude, per-cloud
+          driftF: 0.010 + this._leafRnd(i, 1) * 0.010,     // extremely slow drift
+          driftPh: this._leafRnd(i, 2) * Math.PI * 2,
+          billowPh: this._leafRnd(i, 3) * Math.PI * 2,     // desync the billow
         };
       });
       s._cloudsMotion = motion.id;
     }
+    // BILLOW: slow, shallow deformation of the outline so the cloud softly
+    // morphs as it drifts (like the reference clip) instead of moving rigidly.
+    const BILLOW = 2.4 * intensity;     // max edge displacement (viewBox units) — subtle
+    const bf = 0.06;                    // billow frequency (very slow)
     for (const cd of s._clouds) {
-      // pure horizontal glide, tiny and slow — reads as steady wind drift
+      // steady wind drift (unchanged)
       const dx = cd.amp * intensity * Math.sin(2 * Math.PI * cd.driftF * t + cd.driftPh);
+      if (cd.pts) {
+        const ph = 2 * Math.PI * bf * t + cd.billowPh;
+        let d = '';
+        for (let k = 0; k < cd.pts.length; k++) {
+          const [x0, y0] = cd.pts[k];
+          // position-dependent phase so different parts of the outline swell at
+          // different times → the silhouette breathes organically, not uniformly
+          const u = (x0 - cd.cx) / cd.w, v = (y0 - cd.cy) / cd.h;
+          const sx = BILLOW * Math.sin(ph + u * 4.0 + v * 2.3);
+          // tops billow up a touch more than the flat base
+          const sy = BILLOW * 0.7 * Math.cos(ph * 0.9 + v * 3.1 + u * 1.7);
+          d += (k ? 'L' : 'M') + (x0 + sx).toFixed(2) + ',' + (y0 + sy).toFixed(2);
+        }
+        cd.el.setAttribute('d', cd.closed ? d + 'Z' : d);
+      }
       cd.el.setAttribute('transform', `translate(${dx.toFixed(2)} 0)`);
     }
     wrap.setAttribute('transform', '');
