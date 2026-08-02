@@ -486,12 +486,16 @@ class Animator {
   }
 
   /*
-   * Birds: each child path is one bird. Give it a subtle WING FLAP — a small
+   * Birds: each child path is one bird, with a subtle WING FLAP — a small
    * vertical squash/stretch about the bird's own center (wings sweep up/down)
    * at a natural ~2-3 Hz, each bird on its own phase so the flock isn't in
-   * lockstep. The whole flock also drifts gently across the sky (bounded,
-   * ping-pong) so it reads as gliding, not sliding away. Matches the source
-   * clip: wings move "a little, just natural", flock soars slowly.
+   * lockstep.
+   *
+   * Travel: the flock is split into two groups by which half of the sky each
+   * bird sits in. LEFT-half birds drift gently LEFT, RIGHT-half birds drift
+   * gently RIGHT — so the flock fans outward instead of streaming off one edge.
+   * The drift is a small, slow sine and each bird is clamped to its own
+   * on-canvas room, so no bird ever leaves the artwork. Wing flap is untouched.
    */
   _applyBirds(s, motion, t, intensity) {
     const wrap = s.wrap;
@@ -499,50 +503,47 @@ class Animator {
       const kids = [...wrap.querySelectorAll('path')];
       const svg = wrap.ownerSVGElement;
       const vb = (svg && svg.viewBox && svg.viewBox.baseVal) || { width: 1121.71, height: 1121.73 };
-      // travel corridor: the full sky width plus a margin on each side, so a
-      // bird flies right across the frame, exits, and wraps back in the other
-      // side (fading at the edges to hide the reset — like a real flock passing)
-      s._birdCorridor = { W: vb.width, margin: vb.width * 0.18 };
+      const vbW = vb.width, mid = vbW / 2, MARGIN = 8;
+      const DRIFT = 55;   // max desired horizontal drift (viewBox units), room-clamped below
       s._birds = kids.map((el, i) => {
         const b = el.getBBox();
+        // group by sky half: left-half → drift left (-1), right-half → right (+1)
+        const goRight = (b.x + b.width / 2) >= mid;
+        const roomLeft  = Math.max(0, b.x - MARGIN);
+        const roomRight = Math.max(0, vbW - (b.x + b.width) - MARGIN);
+        // amplitude bounded by the room on the side this bird moves toward
+        const amp = Math.min(DRIFT, goRight ? roomRight : roomLeft);
         return {
-          el, cx: b.x + b.width / 2, cy: b.y + b.height / 2, x0: b.x,
+          el, cx: b.x + b.width / 2, cy: b.y + b.height / 2,
+          dir: goRight ? 1 : -1,
+          amp: amp * (0.7 + this._leafRnd(i, 4) * 0.3),    // slight per-bird variety
+          driftF: 0.05 + this._leafRnd(i, 7) * 0.05,       // slow drift (0.05–0.10 Hz)
+          driftPh: this._leafRnd(i, 8) * Math.PI * 2,
           flapF: 2.1 + this._leafRnd(i, 1) * 1.3,          // 2.1–3.4 Hz wingbeat
           phase: this._leafRnd(i, 2) * Math.PI * 2,        // desync the flock
-          amp: 0.16 + this._leafRnd(i, 3) * 0.10,          // per-bird flap depth
-          vx: 30 + this._leafRnd(i, 4) * 34,               // travel speed (units/s)
-          bobA: 5 + this._leafRnd(i, 5) * 9,               // gentle vertical waver
-          bobF: 0.18 + this._leafRnd(i, 6) * 0.22,
+          flapAmp: 0.16 + this._leafRnd(i, 3) * 0.10,      // per-bird flap depth
+          bobA: 4 + this._leafRnd(i, 5) * 6,               // gentle vertical waver
+          bobF: 0.15 + this._leafRnd(i, 6) * 0.18,
           bobPh: this._leafRnd(i, 0) * Math.PI * 2,
         };
       });
       s._birdsMotion = motion.id;
     }
-    // birds soar LEFTWARD across the open sky (toward the mountains); when one
-    // passes the left margin it wraps around to re-enter from the right.
-    const { W, margin } = s._birdCorridor;
-    const span = W + 2 * margin;
     const spd = intensity;
     for (const bd of s._birds) {
-      // continuous travel, wrapped into the corridor
-      const travel = ((bd.vx * t * spd) % span + span) % span;   // 0..span, wraps
-      const gx = -travel;                                        // move left
-      // wrap the drawn position so exiting left re-enters from the right
-      let x = bd.x0 + gx;
-      while (x < -margin) x += span;
-      const dx = x - bd.x0;
-      const dy = bd.bobA * Math.sin(2 * Math.PI * bd.bobF * t + bd.bobPh);
-      // fade near the corridor edges so the wrap is invisible
-      const edge = Math.min(x + margin, (W + margin) - x);       // dist to nearer edge
-      const fade = Math.max(0, Math.min(1, edge / (margin * 0.6)));
-      // wing flap: vertical scale oscillates about the bird's center
-      const flap = 1 - bd.amp * spd * (0.5 + 0.5 * Math.sin(2 * Math.PI * bd.flapF * t + bd.phase));
+      // gentle bounded drift outward (left group left, right group right).
+      // (1 - cos)/2 ramps 0→1→0 so it eases out and back without a hard turn,
+      // and the sign never crosses zero → the bird only ever moves outward.
+      const ramp = (1 - Math.cos(2 * Math.PI * bd.driftF * t + bd.driftPh)) / 2;
+      const dx = bd.dir * bd.amp * spd * ramp;
+      const dy = bd.bobA * spd * Math.sin(2 * Math.PI * bd.bobF * t + bd.bobPh);
+      // wing flap: vertical scale oscillates about the bird's center (unchanged)
+      const flap = 1 - bd.flapAmp * spd * (0.5 + 0.5 * Math.sin(2 * Math.PI * bd.flapF * t + bd.phase));
       const sy = Math.max(0.6, flap);
       bd.el.setAttribute('transform',
         `translate(${dx.toFixed(2)} ${dy.toFixed(2)}) ` +
         `translate(${bd.cx.toFixed(1)} ${bd.cy.toFixed(1)}) scale(1 ${sy.toFixed(3)}) ` +
         `translate(${(-bd.cx).toFixed(1)} ${(-bd.cy).toFixed(1)})`);
-      bd.el.style.opacity = fade.toFixed(3);
     }
     wrap.setAttribute('transform', '');
   }
