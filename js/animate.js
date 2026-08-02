@@ -282,13 +282,32 @@ const WAVE_CYCLES = 1.5;        // wavelengths across the object's width
 function buildWaveData(wrap) {
   const paths = [];
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const el of wrap.querySelectorAll('path')) {
+  // group bbox first, so we can tell big "cloth" paths (stripes) from small
+  // high-detail paths (a flag's Ashoka chakra, an emblem) that must NOT be
+  // point-resampled — resampling 48 points destroys their fine geometry.
+  let gb; try { gb = wrap.getBBox(); } catch { gb = null; }
+  const gw = gb ? gb.width : 0, gh = gb ? gb.height : 0;
+  const DETAIL_FRAC = 0.34;   // path smaller than this fraction of the group → ride rigidly
+  const els = [...wrap.querySelectorAll('path')];
+  for (const el of els) {
     // remember the pristine geometry (survives re-application / re-build)
     let d0 = el.getAttribute('data-ms-d0');
     if (!d0) { d0 = el.getAttribute('d'); el.setAttribute('data-ms-d0', d0); }
     else el.setAttribute('d', d0);
     const len = el.getTotalLength();
     if (!len) continue;
+    let pb; try { pb = el.getBBox(); } catch { pb = null; }
+    // detail path: small vs. the whole group in BOTH dimensions → keep its exact
+    // geometry and just translate it to follow the cloth (crisp chakra/emblem)
+    const isDetail = pb && gw && gh &&
+      (pb.width < gw * DETAIL_FRAC && pb.height < gh * DETAIL_FRAC);
+    if (isDetail) {
+      const cx = pb.x + pb.width / 2, cy = pb.y + pb.height / 2;
+      paths.push({ el, detail: true, cx, cy });
+      if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+      if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
+      continue;
+    }
     const pts = [];
     for (let i = 0; i <= WAVE_SAMPLES; i++) {
       const pt = el.getPointAtLength(len * i / WAVE_SAMPLES);
@@ -301,6 +320,16 @@ function buildWaveData(wrap) {
     paths.push({ el, pts, closed: /z\s*$/i.test(d0) });
   }
   return paths.length ? { paths, minX, maxX, minY, maxY } : null;
+}
+
+/* Translate a detail (non-resampled) path so it rides the cloth's displacement
+ * at its center. Keeps the path's crisp original geometry intact. */
+function detailRide(pd, minX, minY, w, h, field, t, intensity) {
+  const u = (pd.cx - minX) / w, v = (pd.cy - minY) / h;
+  const s = field(u, v, t);
+  const dx = s.dx * w * 0.5 * intensity;
+  const dy = s.dy * h * 0.5 * intensity;
+  pd.el.setAttribute('transform', `translate(${dx.toFixed(2)} ${dy.toFixed(2)})`);
 }
 
 /* One frame of the wave: returns the new `d` string for a sampled path. */
@@ -413,8 +442,13 @@ class Animator {
           if (s._field) {
             const height = Math.max(1, s._wave.maxY - s._wave.minY);
             for (const pd of s._wave.paths) {
-              pd.el.setAttribute('d', fieldD(pd, s._wave.minX, s._wave.minY,
-                width, height, s._field, rt, intensity));
+              if (pd.detail) {
+                // fine detail (chakra/emblem): ride the cloth, keep crisp geometry
+                detailRide(pd, s._wave.minX, s._wave.minY, width, height, s._field, rt, intensity);
+              } else {
+                pd.el.setAttribute('d', fieldD(pd, s._wave.minX, s._wave.minY,
+                  width, height, s._field, rt, intensity));
+              }
             }
           } else {
             // preset → synthetic traveling sine
@@ -423,8 +457,18 @@ class Animator {
             const k = 2 * Math.PI * WAVE_CYCLES * (0.5 + p.phaseSpread) / width;
             const phase = 2 * Math.PI * p.frequency * rt;
             const turb = p.turbulence * 4 * intensity;
+            const height = Math.max(1, s._wave.maxY - s._wave.minY);
             for (const pd of s._wave.paths) {
-              pd.el.setAttribute('d', waveD(pd, s._wave.minX, width, A, k, phase, turb));
+              if (pd.detail) {
+                // ride the synthetic wave at the detail's x, keeping crisp geometry
+                const ramp = Math.pow((pd.cx - s._wave.minX) / width, 1.15);
+                const arg = phase - k * (pd.cx - s._wave.minX);
+                const dyv = A * ramp * Math.sin(arg) + turb * ramp * _noise(pd.cx * 0.11 + phase * 1.3);
+                const dxv = A * 0.22 * ramp * Math.cos(arg);
+                pd.el.setAttribute('transform', `translate(${dxv.toFixed(2)} ${dyv.toFixed(2)})`);
+              } else {
+                pd.el.setAttribute('d', waveD(pd, s._wave.minX, width, A, k, phase, turb));
+              }
             }
           }
           s.wrap.setAttribute('transform', '');
@@ -762,9 +806,11 @@ class Animator {
       if (s._clouds) { for (const cd of s._clouds) cd.el.removeAttribute('transform'); s._clouds = null; s._cloudsMotion = null; }
       if (s.kind === 'svg' && s.wrap) {
         s.wrap.setAttribute('transform', '');
-        // restore pristine geometry for wave-deformed paths
+        // restore pristine geometry for wave-deformed paths, and clear any
+        // per-path transform used to ride detail elements (e.g. flag chakra)
         for (const el of s.wrap.querySelectorAll('path[data-ms-d0]')) {
           el.setAttribute('d', el.getAttribute('data-ms-d0'));
+          el.removeAttribute('transform');
         }
         s._wave = null;
         s._river = null;
