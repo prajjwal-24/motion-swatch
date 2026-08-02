@@ -356,6 +356,18 @@ class Animator {
         continue;
       }
 
+      // ---- hardcoded scenery behaviors, keyed on the object's name ----
+      // (demo curation: whatever swatch is dropped on the "birds" / "clouds"
+      //  group, it animates the way a viewer expects that object to move.)
+      if (s.kind === 'svg' && /\bbirds?\b/i.test(s.name)) {
+        this._applyBirds(s, motion, rt, intensity);
+        continue;
+      }
+      if (s.kind === 'svg' && /\bclouds?\b/i.test(s.name)) {
+        this._applyClouds(s, motion, rt, intensity);
+        continue;
+      }
+
       // ---- per-glyph text animation: letters ride the motion individually ----
       if (s.kind === 'svg' && s.wrap.querySelector('text')) {
         if (s._text === undefined) s._text = buildTextData(s.wrap);
@@ -473,11 +485,92 @@ class Animator {
     wrap.setAttribute('transform', '');
   }
 
+  /*
+   * Birds: each child path is one bird. Give it a subtle WING FLAP — a small
+   * vertical squash/stretch about the bird's own center (wings sweep up/down)
+   * at a natural ~2-3 Hz, each bird on its own phase so the flock isn't in
+   * lockstep. The whole flock also drifts gently across the sky (bounded,
+   * ping-pong) so it reads as gliding, not sliding away. Matches the source
+   * clip: wings move "a little, just natural", flock soars slowly.
+   */
+  _applyBirds(s, motion, t, intensity) {
+    const wrap = s.wrap;
+    if (!s._birds || s._birdsMotion !== motion.id) {
+      const kids = [...wrap.querySelectorAll('path')];
+      s._birds = kids.map((el, i) => {
+        const b = el.getBBox();
+        return {
+          el, cx: b.x + b.width / 2, cy: b.y + b.height / 2,
+          flapF: 2.1 + this._leafRnd(i, 1) * 1.3,          // 2.1–3.4 Hz wingbeat
+          phase: this._leafRnd(i, 2) * Math.PI * 2,        // desync the flock
+          amp: 0.16 + this._leafRnd(i, 3) * 0.10,          // per-bird flap depth
+          driftF: 0.05 + this._leafRnd(i, 4) * 0.05,       // slow glide freq
+          driftPh: this._leafRnd(i, 5) * Math.PI * 2,
+        };
+      });
+      s._birdsMotion = motion.id;
+    }
+    // gentle shared flock glide (viewBox units, small + bounded)
+    const GLIDE_X = 26, GLIDE_Y = 8;
+    for (const bd of s._birds) {
+      // wing flap: vertical scale oscillates 1±amp about the bird's center.
+      // "just natural" → keep amp small and clamp so wings never invert.
+      const flap = 1 - bd.amp * intensity * (0.5 + 0.5 * Math.sin(2 * Math.PI * bd.flapF * t + bd.phase));
+      const sy = Math.max(0.6, flap);
+      // slow independent glide so the flock drifts without leaving the frame
+      const gx = GLIDE_X * intensity * Math.sin(2 * Math.PI * bd.driftF * t + bd.driftPh);
+      const gy = GLIDE_Y * intensity * Math.sin(2 * Math.PI * bd.driftF * 0.7 * t + bd.driftPh * 1.7);
+      bd.el.setAttribute('transform',
+        `translate(${gx.toFixed(2)} ${gy.toFixed(2)}) ` +
+        `translate(${bd.cx.toFixed(1)} ${bd.cy.toFixed(1)}) scale(1 ${sy.toFixed(3)}) ` +
+        `translate(${(-bd.cx).toFixed(1)} ${(-bd.cy).toFixed(1)})`);
+    }
+    wrap.setAttribute('transform', '');
+  }
+
+  /*
+   * Clouds: each child path is one cloud. Move them as slow, independent drifts
+   * (real clouds don't move as a rigid block), with a barely-there vertical bob
+   * and a gentle "breathing" horizontal scale so they billow softly instead of
+   * sliding. Bounded ping-pong keeps them on screen.
+   */
+  _applyClouds(s, motion, t, intensity) {
+    const wrap = s.wrap;
+    if (!s._clouds || s._cloudsMotion !== motion.id) {
+      const kids = [...wrap.querySelectorAll('path')];
+      s._clouds = kids.map((el, i) => {
+        const b = el.getBBox();
+        return {
+          el, cx: b.x + b.width / 2, cy: b.y + b.height / 2,
+          driftF: 0.018 + this._leafRnd(i, 1) * 0.022,     // very slow (0.018–0.04 Hz)
+          driftPh: this._leafRnd(i, 2) * Math.PI * 2,
+          bobF: 0.05 + this._leafRnd(i, 3) * 0.05,
+          bobPh: this._leafRnd(i, 4) * Math.PI * 2,
+          breathe: 0.012 + this._leafRnd(i, 5) * 0.014,    // subtle scale breathing
+        };
+      });
+      s._cloudsMotion = motion.id;
+    }
+    const DRIFT_X = 60, BOB_Y = 5;   // viewBox units; clouds travel more than birds
+    for (const cd of s._clouds) {
+      const dx = DRIFT_X * intensity * Math.sin(2 * Math.PI * cd.driftF * t + cd.driftPh);
+      const dy = BOB_Y * intensity * Math.sin(2 * Math.PI * cd.bobF * t + cd.bobPh);
+      const sx = 1 + cd.breathe * Math.sin(2 * Math.PI * cd.driftF * 1.3 * t + cd.driftPh);
+      cd.el.setAttribute('transform',
+        `translate(${dx.toFixed(2)} ${dy.toFixed(2)}) ` +
+        `translate(${cd.cx.toFixed(1)} ${cd.cy.toFixed(1)}) scale(${sx.toFixed(4)} 1) ` +
+        `translate(${(-cd.cx).toFixed(1)} ${(-cd.cy).toFixed(1)})`);
+    }
+    wrap.setAttribute('transform', '');
+  }
+
   _reset() {
     for (const s of this.sel.selections) {
       if (s._leaves) {
         for (const lf of s._leaves) { lf.el.removeAttribute('transform'); lf.el.style.opacity = ''; }
       }
+      if (s._birds) { for (const bd of s._birds) bd.el.removeAttribute('transform'); s._birds = null; s._birdsMotion = null; }
+      if (s._clouds) { for (const cd of s._clouds) cd.el.removeAttribute('transform'); s._clouds = null; s._cloudsMotion = null; }
       if (s.kind === 'svg' && s.wrap) {
         s.wrap.setAttribute('transform', '');
         // restore pristine geometry for wave-deformed paths
