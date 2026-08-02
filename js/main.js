@@ -176,10 +176,15 @@ function applyMotionToActive() {
   const m = library.getSelected();
   if (s && m) {
     s.motionId = m.id;
+    const modeEl = s.kind === 'svg' && s.wrap
+      ? s.wrap.querySelector('[data-motion-mode]')
+      : null;
+    const motionMode = modeEl ? modeEl.getAttribute('data-motion-mode') : 'auto';
     // captured motions carry a real trajectory field — geometry deformation
-    // (field replay) looks far more real than rigid transforms, so default
-    // wave mode ON for captures applied to SVG objects
-    if (s.kind === 'svg' && m.trajectories && m.trajectories.length && !(m.params && m.params.leafFall)) {
+    // unless the artwork marks the selected object as structurally rigid.
+    if (motionMode === 'rigid') {
+      s.waveMode = false;
+    } else if (s.kind === 'svg' && m.trajectories && m.trajectories.length && !(m.params && m.params.leafFall)) {
       s.waveMode = true;
     }
     if (m.params && m.params.leafFall) s.waveMode = false;
@@ -368,7 +373,7 @@ function buildLayerNode(el, depth) {
   node.appendChild(row);
 
   const wrap = el.closest('.ms-wrap');
-  if (wrap) layerRowByWrap.set(wrap, row);
+  if (wrap && el.parentElement === wrap) layerRowByWrap.set(wrap, row);
 
   let childBox = null;
   if (kids.length) {
@@ -419,7 +424,21 @@ function markLayerActive(wrap) {
 $('insp-name').addEventListener('change', () => { const s = sel.getActive(); if (s) { s.name = $('insp-name').value; renderChips(); if (sel.mode === 'svg') sel._renderSVGHighlights(); else sel.redraw(); } });
 $('insp-speed').addEventListener('input', () => { const s = sel.getActive(); if (s) { s.speed = parseFloat($('insp-speed').value); $('insp-speed-val').textContent = s.speed.toFixed(1) + 'x'; } });
 $('insp-intensity').addEventListener('input', () => { const s = sel.getActive(); if (s) { s.intensity = parseFloat($('insp-intensity').value); $('insp-intensity-val').textContent = Math.round(s.intensity * 100) + '%'; } });
-$('btn-remove-motion').onclick = () => { const s = sel.getActive(); if (s) { s.motionId = null; if (s.wrap) s.wrap.setAttribute('transform',''); if (s.floatEl) s.floatEl.style.transform=''; showInspector(s); renderChips(); if (sel.mode==='svg') sel._renderSVGHighlights(); else sel.redraw(); status('Motion removed.'); } };
+$('btn-remove-motion').onclick = () => {
+  const s = sel.getActive();
+  if (!s) return;
+  s.motionId = null;
+  if (s.wrap) {
+    s.wrap.setAttribute('transform', '');
+    const canopy = s.wrap.querySelector('[data-motion-role="tree-canopy"]');
+    if (canopy) canopy.removeAttribute('transform');
+  }
+  if (s.floatEl) s.floatEl.style.transform = '';
+  showInspector(s);
+  renderChips();
+  if (sel.mode === 'svg') sel._renderSVGHighlights(); else sel.redraw();
+  status('Motion removed.');
+};
 $('btn-delete-region').onclick = () => { sel.deleteActive(); renderChips(); const a = sel.getActive(); if (a) showInspector(a); else hideInspector(); status('Region deleted.'); };
 
 // =========================================================================
