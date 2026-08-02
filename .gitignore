@@ -15,9 +15,11 @@ build/
 *.log
 demo-export.svg
 
-# Large binary sources (kept out of the repo; document how to fetch instead)
+# Video sources: ignore everywhere EXCEPT the curated demo clips in assets/videos
 *.mp4
 *.mov
+!assets/videos/*.mp4
+!assets/videos/*.mov
 
 # Stray symlinks to sibling/scratch dirs
 comic
