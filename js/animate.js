@@ -529,37 +529,41 @@ class Animator {
   }
 
   /*
-   * Clouds: each child path is one cloud. Move them as slow, independent drifts
-   * (real clouds don't move as a rigid block), with a barely-there vertical bob
-   * and a gentle "breathing" horizontal scale so they billow softly instead of
-   * sliding. Bounded ping-pong keeps them on screen.
+   * Clouds: in the reference clip, clouds drift slowly and STEADILY in one
+   * direction (wind) — they don't bob, pulse, or reverse. So each cloud gets a
+   * gentle, uniform horizontal glide (all the same wind direction, slightly
+   * different speeds), with a very slow, very shallow sine so the loop is
+   * seamless without the drift ever reading as back-and-forth. No vertical bob,
+   * no scale "breathing" (both looked unnatural). Amplitude is small and each
+   * cloud is bounded to its own on-canvas room so none can wander off.
    */
   _applyClouds(s, motion, t, intensity) {
     const wrap = s.wrap;
     if (!s._clouds || s._cloudsMotion !== motion.id) {
       const kids = [...wrap.querySelectorAll('path')];
+      const svg = wrap.ownerSVGElement;
+      const vbW = (svg && svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width) || 1121.71;
+      const MARGIN = 8;
       s._clouds = kids.map((el, i) => {
         const b = el.getBBox();
+        const roomLeft  = Math.max(0, b.x - MARGIN);
+        const roomRight = Math.max(0, vbW - (b.x + b.width) - MARGIN);
+        // travel amplitude: gentle, but never enough to leave the canvas.
+        // cap at 34 units and at whichever side has less room.
+        const amp = Math.min(34, roomLeft, roomRight);
         return {
-          el, cx: b.x + b.width / 2, cy: b.y + b.height / 2,
-          driftF: 0.018 + this._leafRnd(i, 1) * 0.022,     // very slow (0.018–0.04 Hz)
-          driftPh: this._leafRnd(i, 2) * Math.PI * 2,
-          bobF: 0.05 + this._leafRnd(i, 3) * 0.05,
-          bobPh: this._leafRnd(i, 4) * Math.PI * 2,
-          breathe: 0.012 + this._leafRnd(i, 5) * 0.014,    // subtle scale breathing
+          el,
+          amp: amp * (0.7 + this._leafRnd(i, 5) * 0.3),    // slight per-cloud variety
+          driftF: 0.010 + this._leafRnd(i, 1) * 0.010,     // extremely slow (0.010–0.020 Hz)
+          driftPh: this._leafRnd(i, 2) * Math.PI * 2,      // stagger start positions
         };
       });
       s._cloudsMotion = motion.id;
     }
-    const DRIFT_X = 60, BOB_Y = 5;   // viewBox units; clouds travel more than birds
     for (const cd of s._clouds) {
-      const dx = DRIFT_X * intensity * Math.sin(2 * Math.PI * cd.driftF * t + cd.driftPh);
-      const dy = BOB_Y * intensity * Math.sin(2 * Math.PI * cd.bobF * t + cd.bobPh);
-      const sx = 1 + cd.breathe * Math.sin(2 * Math.PI * cd.driftF * 1.3 * t + cd.driftPh);
-      cd.el.setAttribute('transform',
-        `translate(${dx.toFixed(2)} ${dy.toFixed(2)}) ` +
-        `translate(${cd.cx.toFixed(1)} ${cd.cy.toFixed(1)}) scale(${sx.toFixed(4)} 1) ` +
-        `translate(${(-cd.cx).toFixed(1)} ${(-cd.cy).toFixed(1)})`);
+      // pure horizontal glide, tiny and slow — reads as steady wind drift
+      const dx = cd.amp * intensity * Math.sin(2 * Math.PI * cd.driftF * t + cd.driftPh);
+      cd.el.setAttribute('transform', `translate(${dx.toFixed(2)} 0)`);
     }
     wrap.setAttribute('transform', '');
   }
