@@ -439,7 +439,14 @@ class Animator {
             s._field = buildTrajField(motion) || null;
             s._fieldMotion = motion.id;
           }
-          if (s._field) {
+          // A FLAG must flutter as one coherent sheet anchored at the pole. The
+          // raw captured trajectory field is chaotic and, replayed independently
+          // on clean geometric stripes, tears them apart. So for flag-like
+          // objects we always use the coherent synthetic pole-anchored wave —
+          // still DRIVEN by the captured motion's params (freq/amplitude from
+          // the real video), just applied as a smooth traveling wave.
+          const coherent = /flag|banner|pennant|ensign|standard/i.test(s.name);
+          if (s._field && !coherent) {
             const height = Math.max(1, s._wave.maxY - s._wave.minY);
             for (const pd of s._wave.paths) {
               if (pd.detail) {
