@@ -1,5 +1,12 @@
 # What's real vs. hardcoded in Motion Swatch
 
+> ⚠️ **This file predates the scenery work. `PROJECT_STATUS.md` is the current,
+> authoritative accounting.** Two big items were added after this was written and are
+> summarized in the "Added since" section just below:
+> - the **`Autumn Fall` capture is fully synthetic** (bypasses RAFT on a filename match), and
+> - **name-keyed scenery behaviors** (birds / clouds / river / boat / flag / tree-canopy)
+>   run bespoke synthetic animations rather than replaying the captured motion.
+
 This POC was built to **demo reliably in front of an audience**. That goal means
 some parts run genuine algorithms and some are curated so a specific clip always
 lands right. This file is the honest, complete accounting — nothing here is hidden
@@ -7,8 +14,22 @@ in the code.
 
 **Short version:** the *motion math is real* end to end. The *hardcoding is about
 "which region of a clip to look at" and "what to call it"* — plus one preprocessed
-artwork file. On a fresh, unknown clip the app still works automatically; the
-hardcoding just guarantees the curated demo clips segment perfectly.
+artwork file, name-keyed scenery behaviors, and one fully-synthetic capture.
+
+---
+
+## Added since (the two big ones — full detail in PROJECT_STATUS.md §3)
+
+- **Synthetic `Autumn Fall` (frontend, `js/main.js`).** Uploads whose filename matches
+  `/leaf|leaves|falling|autumn/i` skip RAFT entirely; the app returns synthetic
+  falling-leaf trajectories + hand-tuned params while still showing the "extraction"
+  overlay. The leaves demo does no real analysis.
+- **Name-keyed scenery behaviors (frontend, `js/animate.js`).** Objects named
+  `birds` / `clouds` / `river` / `ripples` / `boat` / `flag` / `tree-canopy` animate
+  with a bespoke synthetic behavior keyed on the name — the captured swatch mostly just
+  triggers it (speed/intensity respected; river/boat/flag also read frequency &
+  amplitude). Bird wing-flap in particular is synthetic — **do not advertise it as
+  extracted.**
 
 ---
 

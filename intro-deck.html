@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MotionLife — Intro</title>
+<style>
+  :root{
+    --bg:#060713; --ink:#f5f6fb; --muted:#8b93ad;
+    --c1:#22d3ee; --c2:#8b5cf6; --c3:#fb7185; --c4:#34d399;
+    --card:rgba(255,255,255,.05); --line:rgba(255,255,255,.10);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--ink);
+    font-family:"Segoe UI",-apple-system,Helvetica,Arial,sans-serif;overflow:hidden}
+
+  /* live particle field behind everything (canvas) */
+  #field{position:fixed;inset:0;z-index:0;display:block}
+  .veil{position:fixed;inset:0;z-index:1;pointer-events:none;
+    background:radial-gradient(120% 90% at 50% 40%,transparent 40%,rgba(6,7,19,.55) 100%)}
+
+  .deck{position:relative;z-index:2;height:100vh;width:100vw}
+  .slide{position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;padding:6vw;
+    opacity:0;transform:scale(.985);transition:opacity .5s ease,transform .5s ease;pointer-events:none}
+  .slide.active{opacity:1;transform:none;pointer-events:auto}
+
+  .kicker{font-size:.95rem;letter-spacing:.4em;text-transform:uppercase;color:var(--c1);margin-bottom:1.4rem;font-weight:600}
+  h1{font-size:clamp(2.8rem,8vw,7rem);line-height:.98;font-weight:800;letter-spacing:-.03em}
+  h2{font-size:clamp(2rem,5.5vw,4.4rem);line-height:1.06;font-weight:800;letter-spacing:-.02em}
+  .lead{font-size:clamp(1.1rem,2.2vw,1.6rem);color:var(--muted);max-width:58ch;margin-top:1.6rem;line-height:1.5}
+  .flow{background:linear-gradient(100deg,var(--c1),var(--c2),var(--c3));background-size:220% auto;
+    -webkit-background-clip:text;background-clip:text;color:transparent;animation:hue 6s linear infinite}
+  @keyframes hue{to{background-position:220% center}}
+  em{font-style:normal;color:var(--c1)}
+
+  .r{opacity:0;transform:translateY(22px);transition:opacity .6s cubic-bezier(.2,.7,.2,1),transform .6s cubic-bezier(.2,.7,.2,1)}
+  .active .r{opacity:1;transform:none}
+  .active .r:nth-child(2){transition-delay:.12s}.active .r:nth-child(3){transition-delay:.26s}
+  .active .r:nth-child(4){transition-delay:.4s}.active .r:nth-child(5){transition-delay:.54s}
+
+  .kin span{display:inline-block;opacity:0;transform:translateY(30px) rotate(3deg);
+    transition:opacity .5s ease,transform .5s cubic-bezier(.2,.8,.2,1)}
+  .active .kin span{opacity:1;transform:none}
+
+  /* ---- slide 1: hero ribbon ---- */
+  .hero-ribbon{width:min(70vw,760px);height:130px;margin-top:2rem}
+
+  /* ---- reveal feature pills + CTA ---- */
+  .feat{display:flex;gap:.7rem;flex-wrap:wrap;justify-content:center;margin-top:1.8rem;max-width:62ch}
+  .pill{border:1px solid var(--line);background:var(--card);border-radius:999px;
+    padding:.6rem 1.1rem;font-size:.98rem;color:#c9cee0;backdrop-filter:blur(6px)}
+  .pill b{color:var(--c1);font-weight:700}
+  .cta{margin-top:2rem;display:inline-flex;align-items:center;gap:.6rem;
+    padding:1rem 2rem;border-radius:14px;font-size:1.15rem;font-weight:700;text-decoration:none;color:#04121a;
+    background:linear-gradient(100deg,var(--c1),var(--c2),var(--c3));background-size:200% auto;
+    box-shadow:0 12px 40px rgba(139,92,246,.35);transition:transform .2s,box-shadow .2s,background-position .4s}
+  .cta:hover{transform:translateY(-2px);box-shadow:0 16px 50px rgba(34,211,238,.45);background-position:100% center}
+  .cta .arw{transition:transform .2s}.cta:hover .arw{transform:translateX(4px)}
+  .ctahint{margin-top:.7rem;font-size:.82rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+
+  /* ---- slide 2: frozen vs alive ---- */
+  .metaphor{display:flex;gap:clamp(2rem,6vw,5.5rem);align-items:center;margin-top:1.4rem}
+  .frame{display:flex;flex-direction:column;align-items:center;gap:.9rem}
+  .frame .cap{font-size:1.05rem;letter-spacing:.06em;color:var(--muted)}
+  .box{width:min(28vw,290px);height:min(28vw,290px);border-radius:22px;border:1px solid var(--line);
+    background:var(--card);position:relative;overflow:hidden;backdrop-filter:blur(6px)}
+  .box canvas{width:100%;height:100%;display:block}
+  .arrow{font-size:2.4rem;color:var(--c2);animation:nudge 1.6s ease-in-out infinite}
+  @keyframes nudge{0%,100%{transform:translateX(0)}50%{transform:translateX(9px)}}
+  .badge{position:absolute;top:10px;left:12px;font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;
+    padding:.25rem .6rem;border-radius:999px;font-weight:700;z-index:2}
+  .badge.f{background:rgba(139,147,173,.22);color:#c3c8d8}
+  .badge.a{background:linear-gradient(90deg,var(--c1),var(--c4));color:#04121a}
+
+  /* ---- slide 4: comparison cards (premium) ---- */
+  .paths{display:flex;gap:2rem;margin-top:2.2rem;flex-wrap:wrap;justify-content:center}
+  .card{width:min(40ch,42vw);border-radius:24px;padding:0;text-align:left;position:relative;overflow:hidden;
+    background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,.02));
+    border:1px solid var(--line);backdrop-filter:blur(10px);box-shadow:0 20px 60px rgba(0,0,0,.4)}
+  .card .head{display:flex;align-items:center;gap:.9rem;padding:1.5rem 1.7rem;border-bottom:1px solid var(--line)}
+  .card .ic{width:48px;height:48px;border-radius:14px;display:grid;place-items:center;font-size:1.5rem;flex:none}
+  .card.bad .ic{background:rgba(255,107,107,.14);box-shadow:inset 0 0 0 1px rgba(255,107,107,.3)}
+  .card.bad2 .ic{background:rgba(247,185,85,.14);box-shadow:inset 0 0 0 1px rgba(247,185,85,.3)}
+  .card .title{font-size:1.35rem;font-weight:700}
+  .card.bad .title{color:#ff9d9d}.card.bad2 .title{color:#ffd27a}
+  .card .sub{font-size:.82rem;color:var(--muted);letter-spacing:.04em}
+  .card ul{list-style:none;padding:1.3rem 1.7rem 1.6rem;display:flex;flex-direction:column;gap:.9rem}
+  .card li{color:#c9cee0;font-size:1.06rem;line-height:1.35;padding-left:2rem;position:relative;
+    opacity:0;transform:translateX(-10px);transition:all .45s ease}
+  .active .card li{opacity:1;transform:none}
+  .active .card li:nth-child(1){transition-delay:.25s}.active .card li:nth-child(2){transition-delay:.38s}
+  .active .card li:nth-child(3){transition-delay:.51s}.active .card li:nth-child(4){transition-delay:.64s}
+  .card li::before{position:absolute;left:0;top:1px;width:1.3rem;height:1.3rem;border-radius:50%;
+    display:grid;place-items:center;font-size:.75rem;font-weight:800}
+  .card.bad li::before{content:"✕";background:rgba(255,107,107,.16);color:#ff8a8a}
+  .card.bad2 li::before{content:"!";background:rgba(247,185,85,.16);color:#f7b955}
+  .vs{align-self:center;font-weight:800;color:var(--muted);font-size:1.1rem;letter-spacing:.2em}
+
+  .big{font-size:clamp(2.6rem,8vw,6.2rem);font-weight:800;letter-spacing:-.03em}
+
+  /* ---- slide 6: swatches ---- */
+  .swatch-row{display:flex;gap:.9rem;margin-top:2.2rem}
+  .sw{width:70px;height:70px;border-radius:15px;overflow:hidden;border:1px solid var(--line);
+    box-shadow:0 10px 34px rgba(0,0,0,.4)}
+  .active .sw{animation:pop .5s backwards}
+  .sw:nth-child(1){animation-delay:.5s}.sw:nth-child(2){animation-delay:.6s}.sw:nth-child(3){animation-delay:.7s}
+  .sw:nth-child(4){animation-delay:.8s}.sw:nth-child(5){animation-delay:.9s}
+  @keyframes pop{from{opacity:0;transform:translateY(18px) scale(.8)}to{opacity:1;transform:none}}
+  .sw canvas{width:100%;height:100%;display:block}
+  .sw .lbl{}
+
+  /* ---- slide 7: steps with mini animated canvases ---- */
+  .steps{display:flex;gap:1.6rem;margin-top:2.4rem;flex-wrap:wrap;justify-content:center}
+  .step{width:min(28ch,25vw);background:var(--card);border:1px solid var(--line);border-radius:20px;
+    padding:1.5rem;text-align:left;position:relative;overflow:hidden}
+  .step .num{font-size:.9rem;font-weight:800;color:var(--c1);letter-spacing:.1em}
+  .step h4{font-size:1.25rem;margin:.5rem 0}
+  .step p{color:var(--muted);font-size:.98rem;line-height:1.4}
+  .step canvas{width:100%;height:70px;display:block;margin-top:1rem;border-radius:10px;background:rgba(0,0,0,.25)}
+
+  /* ---- slide 8: final ---- */
+  .final-wave{width:min(60vw,620px);height:120px;margin-top:1.8rem}
+
+  /* ---- thumbnail slide: full-page landing layout ---- */
+  .thumb{padding:2.6vh 3vw !important;justify-content:flex-start;align-items:stretch;text-align:left;gap:0;
+    display:grid !important;grid-template-rows:auto auto 1fr auto;row-gap:1.6vh}
+  /* hide the fixed deck brand + hint on this slide so the frame is clean */
+  body:has(.slide.thumb.active) .brand,
+  body:has(.slide.thumb.active) .hint,
+  body:has(.slide.thumb.active) .progress{display:none}
+
+  .thumb-head{display:flex;justify-content:space-between;align-items:center;width:100%;padding-bottom:1.2vh;border-bottom:1px solid var(--line)}
+  .thumb-brand{font-weight:800;font-size:1.3rem;display:flex;align-items:center;gap:.6rem}
+  .tb-dot{width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,var(--c1),var(--c2),var(--c3));box-shadow:0 0 14px var(--c2)}
+  .thumb-tagline{font-size:.8rem;letter-spacing:.36em;text-transform:uppercase;color:var(--c1);font-weight:600}
+
+  .thumb-hero-row{display:grid;grid-template-columns:1.15fr 1fr;gap:2.5vw;align-items:center;width:100%}
+  .thumb-hero-txt .kicker{font-size:.82rem;margin-bottom:.7rem}
+  .thumb-hero-txt h1{font-size:clamp(3.2rem,7vw,6.2rem);line-height:.95;margin:0 0 1rem}
+  .thumb-tag{font-size:clamp(1.05rem,1.35vw,1.35rem);color:#b8bfd4;line-height:1.45;margin:0;max-width:52ch}
+  .thumb-tag em{color:var(--c1);font-style:normal}
+
+  .thumb-metaphor{display:flex;gap:1.3rem;align-items:center;justify-content:flex-end}
+  .thumb-metaphor .box{width:clamp(160px,20vw,260px);height:clamp(160px,20vw,260px);border-radius:20px}
+  .thumb-metaphor .cap{font-size:.95rem;margin-top:.35rem}
+  .thumb-metaphor .arrow{font-size:2rem;animation:none;color:var(--c2)}
+  .thumb-metaphor .badge{font-size:.65rem;padding:.2rem .55rem;top:10px;left:10px}
+
+  .thumb-mid{display:grid;grid-template-columns:1.35fr 1fr;gap:1.6vw;width:100%;align-items:stretch}
+  .tm-block{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:1.6rem 1.8rem;
+    backdrop-filter:blur(6px);display:flex;flex-direction:column;justify-content:center;gap:1.2rem}
+  .tm-h{font-size:.8rem;letter-spacing:.3em;text-transform:uppercase;color:var(--c1);font-weight:600}
+  .tm-cols{display:grid;grid-template-columns:1fr 1fr;gap:1.1rem;flex:1;min-height:0}
+  .tm-col{border-radius:14px;padding:1.3rem 1.4rem;border:1px solid var(--line);background:rgba(255,255,255,.03);
+    display:flex;flex-direction:column;gap:.7rem}
+  .tm-col.bad{border-color:rgba(255,107,107,.34);background:linear-gradient(180deg,rgba(255,107,107,.08),rgba(255,255,255,.02))}
+  .tm-col.bad2{border-color:rgba(247,185,85,.34);background:linear-gradient(180deg,rgba(247,185,85,.08),rgba(255,255,255,.02))}
+  .tm-col .tm-t{font-weight:700;font-size:1.25rem}
+  .tm-col.bad .tm-t{color:#ff9d9d}
+  .tm-col.bad2 .tm-t{color:#ffd27a}
+  .tm-col .tm-d{color:#c1c7dc;font-size:1.02rem;line-height:1.5}
+  .tm-list{list-style:none;padding:0;margin:.2rem 0;display:flex;flex-direction:column;gap:.45rem;flex:1}
+  .tm-list li{color:#a9b0c6;font-size:.94rem;padding-left:1.4rem;position:relative;line-height:1.3}
+  .tm-col.bad .tm-list li::before{content:"✕";position:absolute;left:0;color:#ff8a8a;font-weight:800}
+  .tm-col.bad2 .tm-list li::before{content:"⚠";position:absolute;left:0;color:#f7b955;font-weight:800}
+  .tm-tag{font-size:.72rem;letter-spacing:.22em;text-transform:uppercase;color:var(--muted);font-weight:600;padding-top:.55rem;border-top:1px dashed var(--line);margin-top:.2rem}
+
+  .tm-steps{display:flex;flex-direction:column;gap:.85rem;flex:1;justify-content:center}
+  .tm-step{display:flex;align-items:center;gap:1rem;padding:.95rem 1.15rem;background:rgba(255,255,255,.03);
+    border:1px solid var(--line);border-radius:14px}
+  .tm-step > div{display:flex;flex-direction:column;line-height:1.3}
+  .tm-step b{font-size:1.2rem;color:var(--ink)}
+  .tm-step span{color:#a9b0c6;font-size:.95rem}
+  .tm-num{font-size:.9rem;font-weight:800;color:var(--c1);letter-spacing:.1em;padding:.55rem .75rem;border:1px solid rgba(34,211,238,.5);border-radius:11px;flex:none}
+  .tm-sep{display:none}
+
+  .thumb-bottom{display:grid;grid-template-columns:2.2fr 1fr;gap:1.6vw;width:100%;align-items:center}
+  .tb-features{display:grid;grid-template-columns:1fr 1fr;gap:.65rem 1rem}
+  .tbf{color:#c9cee0;font-size:1.02rem;padding:.75rem 1.1rem;background:var(--card);border:1px solid var(--line);border-radius:12px}
+  .tbf b{color:var(--c1);font-weight:700}
+  .tb-swatches{display:flex;gap:.65rem;justify-content:flex-end}
+  .tb-swatches .sw{width:clamp(66px,6.5vw,92px);height:clamp(66px,6.5vw,92px);border-radius:14px}
+
+  @media (max-width:1000px){
+    .thumb-hero-row,.thumb-mid,.thumb-bottom{grid-template-columns:1fr}
+    .thumb-metaphor{justify-content:center}
+    .tb-swatches{justify-content:center}
+  }
+
+  /* chrome */
+  .progress{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);display:flex;gap:10px;z-index:6}
+  .progress i{width:9px;height:9px;border-radius:50%;background:rgba(255,255,255,.2);transition:all .3s;cursor:pointer}
+  .progress i.on{background:var(--c1);width:28px;border-radius:6px}
+  .hint{position:fixed;bottom:24px;right:28px;color:var(--muted);font-size:.82rem;z-index:6;letter-spacing:.05em}
+  .brand{position:fixed;top:26px;left:32px;z-index:6;font-weight:800;font-size:1.15rem}
+  .brand .d{background:linear-gradient(90deg,var(--c1),var(--c2));-webkit-background-clip:text;background-clip:text;color:transparent}
+</style>
+</head>
+<body>
+  <canvas id="field"></canvas>
+  <div class="veil"></div>
+  <div class="brand">Motion<span class="d">Life</span></div>
+
+  <div class="deck" id="deck">
+
+    <!-- 0 · THUMBNAIL / ONE-SLIDE OVERVIEW -->
+    <section class="slide thumb">
+      <div class="thumb-head">
+        <div class="thumb-brand"><span class="tb-dot"></span>MotionLife</div>
+        <div class="thumb-tagline">Real motion · Full control · Zero keyframes</div>
+      </div>
+
+      <div class="thumb-hero-row">
+        <div class="thumb-hero-txt">
+          <div class="kicker">Bring static art to life</div>
+          <h1>Motion<span class="flow">Life</span></h1>
+          <p class="thumb-tag">An AI motion-transfer engine that captures real-world motion from any video, distills it into a reusable <em>motion swatch</em>, and applies it to individual objects in your vector artwork — no keyframes, no rigging, no leaving your design.</p>
+        </div>
+        <div class="thumb-metaphor">
+          <div class="frame"><div class="box"><span class="badge f">Static</span><canvas data-anim="scene" data-alive="0"></canvas></div><div class="cap">Before</div></div>
+          <div class="arrow">→</div>
+          <div class="frame"><div class="box"><span class="badge a">MotionLife</span><canvas data-anim="scene" data-alive="1"></canvas></div><div class="cap" style="color:var(--c1)">After</div></div>
+        </div>
+      </div>
+
+      <div class="thumb-mid">
+        <div class="tm-block">
+          <div class="tm-h">The problem</div>
+          <div class="tm-cols">
+            <div class="tm-col bad">
+              <div class="tm-t">🛠 Hand-animate</div>
+              <div class="tm-d">Rebuild art into layers &amp; rigs. Hand-author every keyframe. Hours of work for a few seconds of motion.</div>
+              <ul class="tm-list">
+                <li>Leave your design tool</li>
+                <li>Rig every moving part</li>
+                <li>Set every keyframe</li>
+                <li>Needs animation expertise</li>
+              </ul>
+              <div class="tm-tag">Slow · Technical · Breaks flow</div>
+            </div>
+            <div class="tm-col bad2">
+              <div class="tm-t">🤖 Generate with AI video</div>
+              <div class="tm-d">Type a prompt and let AI invent motion — but it replaces your artwork with something else.</div>
+              <ul class="tm-list">
+                <li>Redraws your art</li>
+                <li>Changes colors &amp; details</li>
+                <li>No dials, no tuning</li>
+                <li>Different every time</li>
+              </ul>
+              <div class="tm-tag">Unfaithful · Uncontrollable</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tm-block">
+          <div class="tm-h">How it works</div>
+          <div class="tm-steps">
+            <div class="tm-step"><span class="tm-num">01</span><div><b>Capture</b><span>Motion from real video</span></div></div>
+            <div class="tm-step"><span class="tm-num">02</span><div><b>Distill</b><span>Into a reusable swatch</span></div></div>
+            <div class="tm-step"><span class="tm-num">03</span><div><b>Apply</b><span>Onto any vector object</span></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="thumb-bottom">
+        <div class="tb-features">
+          <div class="tbf"><b>Capture</b> motion from real video</div>
+          <div class="tbf"><b>Reuse</b> the same swatch on any object</div>
+          <div class="tbf"><b>Control</b> speed, intensity &amp; detail</div>
+          <div class="tbf"><b>Preserve</b> your artwork, pixel-for-pixel</div>
+        </div>
+        <div class="tb-swatches">
+          <div class="sw"><canvas data-anim="swatch" data-k="flag"></canvas></div>
+          <div class="sw"><canvas data-anim="swatch" data-k="water"></canvas></div>
+          <div class="sw"><canvas data-anim="swatch" data-k="birds"></canvas></div>
+          <div class="sw"><canvas data-anim="swatch" data-k="leaves"></canvas></div>
+          <div class="sw"><canvas data-anim="swatch" data-k="smoke"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 1 · PROBLEM HOOK -->
+    <section class="slide">
+      <div class="kicker r">Every designer knows this feeling</div>
+      <h2 class="kin r" aria-label="You made something beautiful.">
+        <span>You&nbsp;</span><span>made&nbsp;</span><span>something&nbsp;</span><span class="flow">beautiful.</span></h2>
+      <h2 class="kin r" style="margin-top:.5rem" aria-label="Now try to make it move.">
+        <span>Now&nbsp;</span><span>try&nbsp;</span><span>to&nbsp;</span><span>make&nbsp;</span><span>it&nbsp;</span><span><em>move.</em></span></h2>
+      <p class="lead r">…and everything grinds to a halt.</p>
+      <canvas class="hero-ribbon r" data-anim="freezeline" style="height:80px"></canvas>
+    </section>
+
+    <!-- 2 · TWO BAD OPTIONS -->
+    <section class="slide">
+      <div class="kicker r">Today, you get two bad options</div>
+      <div class="paths">
+        <div class="card bad r">
+          <div class="head"><div class="ic">🛠</div><div><div class="title">Animate it by hand</div><div class="sub">The traditional way</div></div></div>
+          <ul><li>Leave your design tool</li><li>Rebuild art into layers &amp; rigs</li><li>Hand-author keyframes, one by one</li><li>Needs real animation expertise</li></ul>
+        </div>
+        <div class="vs r">VS</div>
+        <div class="card bad2 r">
+          <div class="head"><div class="ic">🤖</div><div><div class="title">Generate it with AI video</div><div class="sub">The new shortcut</div></div></div>
+          <ul><li>Redraws &amp; distorts your artwork</li><li>Changes your colors &amp; details</li><li>No precise, repeatable control</li><li>Can't move <em>your</em> object <em>your</em> way</li></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3 · THE COST -->
+    <section class="slide">
+      <div class="big r">Motion is <span class="flow">disconnected</span></div>
+      <div class="big r" style="margin-top:.2rem">from design.</div>
+      <p class="lead r">It breaks creative flow, demands technical skill, and shuts out most designers entirely.</p>
+      <canvas class="hero-ribbon r" data-anim="scatter" style="height:90px"></canvas>
+    </section>
+
+    <!-- 4 · THE TURN -->
+    <section class="slide">
+      <div class="kicker r">But what if…</div>
+      <h2 class="r">…motion were just <span class="flow">a swatch?</span></h2>
+      <p class="lead r">Something you capture once — and reuse on anything.</p>
+      <div class="swatch-row r">
+        <div class="sw"><canvas data-anim="swatch" data-k="flag"></canvas></div>
+        <div class="sw"><canvas data-anim="swatch" data-k="water"></canvas></div>
+        <div class="sw"><canvas data-anim="swatch" data-k="birds"></canvas></div>
+        <div class="sw"><canvas data-anim="swatch" data-k="leaves"></canvas></div>
+        <div class="sw"><canvas data-anim="swatch" data-k="smoke"></canvas></div>
+      </div>
+    </section>
+
+    <!-- 5 · THE REVEAL -->
+    <section class="slide">
+      <div class="kicker r">Introducing</div>
+      <h1 class="r">Motion<span class="flow">Life</span></h1>
+      <p class="lead r">Capture real-world motion. Paint it onto your artwork.
+        As simple as picking a&nbsp;color.</p>
+      <canvas class="hero-ribbon r" data-anim="ribbon"></canvas>
+    </section>
+
+    <!-- 6 · THE PROOF (frozen → alive) -->
+    <section class="slide">
+      <div class="kicker r">The same artwork — brought to life</div>
+      <div class="metaphor r">
+        <div class="frame"><div class="box"><span class="badge f">Static</span><canvas data-anim="scene" data-alive="0"></canvas></div><div class="cap">Before</div></div>
+        <div class="arrow">→</div>
+        <div class="frame"><div class="box"><span class="badge a">MotionLife</span><canvas data-anim="scene" data-alive="1"></canvas></div><div class="cap" style="color:var(--c1)">After</div></div>
+      </div>
+      <p class="lead r">Nothing redrawn. Every color, every detail — exactly as you designed it.</p>
+    </section>
+
+    <!-- 7 · HOW IT WORKS -->
+    <section class="slide">
+      <div class="kicker r">How it works</div>
+      <h2 class="r">Three steps. No keyframes.</h2>
+      <div class="steps">
+        <div class="step r"><div class="num">01 — CAPTURE</div><h4>🎥 From real video</h4><p>Deep optical flow measures how motion actually moves.</p><canvas data-anim="step" data-k="capture"></canvas></div>
+        <div class="step r"><div class="num">02 — DISTILL</div><h4>🎨 Into a swatch</h4><p>Compressed into a reusable, editable motion asset.</p><canvas data-anim="step" data-k="distill"></canvas></div>
+        <div class="step r"><div class="num">03 — APPLY</div><h4>✨ Onto any object</h4><p>Drop it on a flag, water, clouds — artwork intact.</p><canvas data-anim="step" data-k="apply"></canvas></div>
+      </div>
+    </section>
+
+    <!-- 8 · CTA / DETAILED INFO -->
+    <section class="slide">
+      <div class="kicker r">Real motion · Full control · Zero keyframes</div>
+      <h1 class="r">Motion<span class="flow">Life</span></h1>
+      <p class="lead r">An AI motion-transfer engine that captures real-world motion from
+        any video, distills it into a reusable, editable <em>motion swatch</em>,
+        and applies it to individual objects in your vector artwork — no keyframes,
+        no rigging, no leaving your design.</p>
+      <div class="feat r">
+        <span class="pill"><b>Capture</b> motion from real video</span>
+        <span class="pill"><b>Reuse</b> it on any object</span>
+        <span class="pill"><b>Control</b> speed, intensity &amp; detail</span>
+        <span class="pill"><b>Preserve</b> your artwork, pixel-for-pixel</span>
+      </div>
+      <a class="cta r" href="http://localhost:8000" target="_blank" rel="noopener">
+        Open the live app <span class="arw">→</span>
+      </a>
+      <div class="ctahint r">localhost:8000</div>
+    </section>
+
+  </div>
+
+  <div class="progress" id="progress"></div>
+  <div class="hint">← → or Space to advance</div>
+
+<script>
+  const slides=[...document.querySelectorAll('.slide')];
+  const prog=document.getElementById('progress');
+  let idx=0;
+  slides.forEach((_,i)=>{const b=document.createElement('i');b.onclick=e=>{e.stopPropagation();go(i);};prog.appendChild(b);});
+  const dots=[...prog.children];
+  function go(n){idx=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach((s,i)=>s.classList.toggle('active',i===idx));
+    dots.forEach((d,i)=>d.classList.toggle('on',i===idx));}
+  document.addEventListener('keydown',e=>{
+    if(['ArrowRight',' ','PageDown'].includes(e.key)){e.preventDefault();go(idx+1);}
+    if(['ArrowLeft','PageUp'].includes(e.key)){e.preventDefault();go(idx-1);}
+    if(e.key==='Home')go(0);if(e.key==='End')go(slides.length-1);});
+  document.addEventListener('click',e=>{if(e.target.closest('.progress'))return;go(idx+1);});
+  go(0);
+
+  const hex=h=>{const n=parseInt(h.slice(1),16);return[(n>>16)&255,(n>>8)&255,n&255]};
+
+  /* ===== background particle-flow field ===== */
+  const field=document.getElementById('field'),fx=field.getContext('2d');
+  let W,H,parts=[];
+  function resize(){W=field.width=innerWidth;H=field.height=innerHeight;
+    const n=Math.round(W*H/16000);parts=Array.from({length:n},()=>({
+      x:Math.random()*W,y:Math.random()*H,
+      s:0.4+Math.random()*1.1,r:0.6+Math.random()*1.8,
+      ph:Math.random()*6.28}));}
+  addEventListener('resize',resize);resize();
+  // flow noise: gentle curl so dots stream like wind — the product's whole idea
+  function bgLoop(ts){
+    const t=ts/1000;
+    fx.clearRect(0,0,W,H);
+    // faint moving gradient wash
+    const g=fx.createLinearGradient(0,0,W,H);
+    g.addColorStop(0,'rgba(34,211,238,0.05)');g.addColorStop(.5,'rgba(139,92,246,0.06)');g.addColorStop(1,'rgba(251,113,133,0.05)');
+    fx.fillStyle=g;fx.fillRect(0,0,W,H);
+    for(const p of parts){
+      const ang=Math.sin(p.y*0.004+t*0.4+p.ph)+Math.cos(p.x*0.004-t*0.3);
+      p.x+=Math.cos(ang)*p.s;p.y+=Math.sin(ang)*p.s*0.6+0.15*p.s;
+      if(p.x<0)p.x+=W;if(p.x>W)p.x-=W;if(p.y>H)p.y-=H;if(p.y<0)p.y+=H;
+      const a=0.16+0.16*Math.sin(t+p.ph);
+      fx.fillStyle=`rgba(150,180,255,${a.toFixed(3)})`;
+      fx.beginPath();fx.arc(p.x,p.y,p.r,0,6.283);fx.fill();
+    }
+    requestAnimationFrame(bgLoop);
+  }
+  requestAnimationFrame(bgLoop);
+
+  /* ===== per-slide canvases ===== */
+  const canvases=[...document.querySelectorAll('.deck canvas')];
+  function fit(c){const r=c.getBoundingClientRect();c.width=Math.max(2,r.width*2);c.height=Math.max(2,r.height*2);}
+  const ro=new ResizeObserver(es=>es.forEach(e=>fit(e.target)));canvases.forEach(c=>{fit(c);ro.observe(c);});
+  const SW={flag:'#22d3ee',water:'#38bdf8',birds:'#8b5cf6',leaves:'#34d399',smoke:'#cbd5e1'};
+
+  function ribbon(c,ctx,t){const W=c.width,H=c.height;ctx.clearRect(0,0,W,H);
+    const rows=5;for(let r=0;r<rows;r++){
+      const gy=H*(0.2+0.6*r/(rows-1));
+      const grad=ctx.createLinearGradient(0,0,W,0);
+      grad.addColorStop(0,'#22d3ee');grad.addColorStop(.5,'#8b5cf6');grad.addColorStop(1,'#fb7185');
+      ctx.strokeStyle=grad;ctx.lineWidth=3*devicePixelRatio;ctx.globalAlpha=0.35+0.5*(1-r/rows);
+      ctx.beginPath();
+      for(let x=0;x<=W;x+=6){const y=gy+Math.sin(x*0.012+t*2.4-r*0.5)*H*0.14*(0.5+r/rows);x?ctx.lineTo(x,y):ctx.moveTo(x,y);}
+      ctx.stroke();}
+    ctx.globalAlpha=1;}
+
+  function scene(c,ctx,t,alive){const W=c.width,H=c.height;ctx.clearRect(0,0,W,H);
+    ctx.strokeStyle='#6b7488';ctx.lineWidth=8*devicePixelRatio;ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(W*0.26,H*0.14);ctx.lineTo(W*0.26,H*0.9);ctx.stroke();
+    const bx=W*0.26,ty=H*0.2,fw=W*0.52,fh=H*0.34,seg=28;
+    const grad=ctx.createLinearGradient(bx,0,bx+fw,0);
+    grad.addColorStop(0,'#22d3ee');grad.addColorStop(.5,'#8b5cf6');grad.addColorStop(1,'#fb7185');
+    ctx.fillStyle=grad;ctx.beginPath();
+    for(let i=0;i<=seg;i++){const u=i/seg,x=bx+u*fw;const w=alive?Math.sin(t*3-u*7)*u*H*0.09:0;ctx.lineTo(x,ty+w);}
+    for(let i=seg;i>=0;i--){const u=i/seg,x=bx+u*fw;const w=alive?Math.sin(t*3-u*7+0.5)*u*H*0.09:0;ctx.lineTo(x,ty+fh+w);}
+    ctx.closePath();ctx.fill();}
+
+  function freezeline(c,ctx,t){const W=c.width,H=c.height;ctx.clearRect(0,0,W,H);
+    // left half flowing, right half frozen flat — the "grinds to a halt" idea
+    ctx.lineWidth=3*devicePixelRatio;
+    const grad=ctx.createLinearGradient(0,0,W,0);
+    grad.addColorStop(0,'#22d3ee');grad.addColorStop(.55,'#8b5cf6');grad.addColorStop(.55,'#3a3f55');grad.addColorStop(1,'#3a3f55');
+    ctx.strokeStyle=grad;
+    for(let k=-1;k<=1;k++){ctx.beginPath();ctx.globalAlpha=k?0.35:0.8;
+      for(let x=0;x<=W;x+=6){const prog=x/W;const amp=prog<0.55?H*0.2*(1-prog/0.55*0.2):0;
+        const y=H/2+k*H*0.16+Math.sin(x*0.02+t*3)*amp;x?ctx.lineTo(x,y):ctx.moveTo(x,y);}
+      ctx.stroke();}
+    ctx.globalAlpha=1;
+    // ice/freeze marker
+    ctx.fillStyle='rgba(150,160,190,.5)';ctx.font=`${18*devicePixelRatio}px Segoe UI`;
+    ctx.fillText('❄',W*0.57,H*0.5);}
+
+  function scatter(c,ctx,t){const W=c.width,H=c.height;ctx.clearRect(0,0,W,H);
+    // two clusters drifting apart — "disconnected"
+    for(let i=0;i<40;i++){const side=i%2?1:-1;const ph=i*0.6;
+      const cx=W/2+side*(W*0.12+Math.abs(Math.sin(t*0.6+ph))*W*0.2);
+      const cy=H/2+Math.sin(t*1.2+ph)*H*0.3;
+      ctx.fillStyle=side>0?'rgba(251,113,133,.6)':'rgba(34,211,238,.6)';
+      ctx.beginPath();ctx.arc(cx,cy,2.5*devicePixelRatio,0,6.283);ctx.fill();}}
+
+  function swatch(c,ctx,t,k){const W=c.width,H=c.height,[r,g,b]=hex(SW[k]);
+    ctx.fillStyle='rgba(6,7,19,.34)';ctx.fillRect(0,0,W,H);ctx.fillStyle=`rgb(${r},${g},${b})`;
+    const N=5,cell=W/(N+1);
+    for(let gy=0;gy<N;gy++)for(let gx=0;gx<N;gx++){const hx=(gx+1)*cell,hy=(gy+1)*cell,u=gx/(N-1),v=gy/(N-1);let dx=0,dy=0;
+      if(k==='flag'){dy=Math.sin(t*3+u*4)*u*cell*0.5;dx=Math.cos(t*3+u*4)*u*cell*0.12;}
+      else if(k==='water'){dy=Math.sin(t*2+u*6)*cell*0.25;dx=Math.cos(t*1.5+v*4)*cell*0.12;}
+      else if(k==='birds'){dx=Math.sin(t*1.2+v*3)*cell*0.5;dy=Math.cos(t*4+u*6)*cell*0.3;}
+      else if(k==='leaves'){dy=((t*22+gy*24+gx*10)% (cell*3))-cell*0.6;dx=Math.sin(t*2+gx)*cell*0.35;}
+      else if(k==='smoke'){dy=-((t*18+gy*22)%(cell*3.2))+cell*0.5;dx=Math.sin(t*2.4+v*5)*cell*0.35;}
+      ctx.beginPath();ctx.arc(hx+dx,hy+dy,cell*0.11,0,6.283);ctx.fill();}}
+
+  function step(c,ctx,t,k){const W=c.width,H=c.height;ctx.clearRect(0,0,W,H);
+    if(k==='capture'){ // scanning bars (video frames)
+      for(let i=0;i<8;i++){const x=i*W/8;const h=H*(0.3+0.5*Math.abs(Math.sin(t*3+i*0.7)));
+        ctx.fillStyle='rgba(34,211,238,.55)';ctx.fillRect(x+3,H-h,W/8-6,h);}
+      const sx=(t*0.4%1)*W;ctx.fillStyle='rgba(255,255,255,.7)';ctx.fillRect(sx,0,2*devicePixelRatio,H);
+    } else if(k==='distill'){ // many dots collapsing into a grid swatch
+      const N=4,cell=W/(N+1);
+      for(let gy=0;gy<N;gy++)for(let gx=0;gx<N;gx++){
+        const tx=(gx+1)*cell,ty=(gy+1)*(H/(N+1));
+        const k2=(Math.sin(t*1.5+gx*gy)+1)/2;
+        const x=tx+Math.cos(t+gx)* (1-k2)*W*0.2, y=ty+Math.sin(t+gy)*(1-k2)*H*0.3;
+        ctx.fillStyle='rgba(139,92,246,.7)';ctx.beginPath();ctx.arc(x,y,cell*0.13,0,6.283);ctx.fill();}
+    } else { // apply: a shape morphs/waves
+      const grad=ctx.createLinearGradient(0,0,W,0);
+      grad.addColorStop(0,'#22d3ee');grad.addColorStop(1,'#fb7185');ctx.fillStyle=grad;
+      ctx.beginPath();const cy=H*0.5;
+      for(let x=0;x<=W;x+=5){const y=cy+Math.sin(x*0.02+t*3)*H*0.22;x?ctx.lineTo(x,y):ctx.moveTo(x,y);}
+      for(let x=W;x>=0;x-=5){const y=cy+H*0.18+Math.sin(x*0.02+t*3+.4)*H*0.22;ctx.lineTo(x,y);}
+      ctx.closePath();ctx.globalAlpha=.85;ctx.fill();ctx.globalAlpha=1;}}
+
+  function loop(ts){const t=ts/1000;
+    for(const c of canvases){const ctx=c.getContext('2d'),a=c.dataset.anim;
+      if(!c.closest('.slide').classList.contains('active'))continue;
+      if(a==='ribbon')ribbon(c,ctx,t);
+      else if(a==='scene')scene(c,ctx,t,c.dataset.alive==='1');
+      else if(a==='freezeline')freezeline(c,ctx,t);
+      else if(a==='scatter')scatter(c,ctx,t);
+      else if(a==='swatch')swatch(c,ctx,t,c.dataset.k);
+      else if(a==='step')step(c,ctx,t,c.dataset.k);
+    }
+    requestAnimationFrame(loop);}
+  requestAnimationFrame(loop);
+</script>
+</body>
+</html>
