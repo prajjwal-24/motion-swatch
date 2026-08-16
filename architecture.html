@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MotionLife 2.0 Architecture Diagram</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family:'JetBrains Mono',monospace; background:#020617; min-height:100vh; padding:2rem; color:white; }
+    .container { max-width:1200px; margin:0 auto; }
+    .header { margin-bottom:2rem; }
+    .header-row { display:flex; align-items:center; gap:1rem; margin-bottom:0.5rem; }
+    .pulse-dot { width:12px; height:12px; background:#22d3ee; border-radius:50%; animation:pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.5;} }
+    h1 { font-size:1.5rem; font-weight:700; letter-spacing:-0.025em; }
+    .subtitle { color:#94a3b8; font-size:0.875rem; margin-left:1.75rem; }
+    .diagram-container { background:rgba(15,23,42,0.5); border-radius:1rem; border:1px solid #1e293b; padding:1.5rem; overflow-x:auto; }
+    svg { width:100%; min-width:960px; display:block; }
+    .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1rem; margin-top:2rem; }
+    .card { background:rgba(15,23,42,0.5); border-radius:0.75rem; border:1px solid #1e293b; padding:1.25rem; }
+    .card-header { display:flex; align-items:center; gap:0.5rem; margin-bottom:0.75rem; }
+    .card-dot { width:8px; height:8px; border-radius:50%; }
+    .card-dot.cyan{background:#22d3ee;} .card-dot.emerald{background:#34d399;} .card-dot.violet{background:#a78bfa;}
+    .card-dot.amber{background:#fbbf24;} .card-dot.rose{background:#fb7185;} .card-dot.orange{background:#fb923c;}
+    .card h3 { font-size:0.875rem; font-weight:600; }
+    .card ul { list-style:none; color:#94a3b8; font-size:0.75rem; }
+    .card li { margin-bottom:0.375rem; }
+    .card li b { color:#cbd5e1; font-weight:600; }
+    .footer { text-align:center; margin-top:1.5rem; color:#475569; font-size:0.75rem; }
+    .toolbar { display:flex; gap:0.5rem; margin-left:auto; flex-shrink:0; align-items:center; }
+    .toolbar-toggle { background:transparent; border:none; color:#475569; cursor:pointer; font-size:1.25rem; line-height:1; padding:0.25rem 0.5rem; border-radius:0.375rem; transition:color 0.2s,background 0.2s; }
+    .toolbar-toggle:hover { color:#94a3b8; background:rgba(30,41,59,0.5); }
+    .toolbar-actions { display:none; gap:0.5rem; }
+    .toolbar.expanded .toolbar-actions { display:flex; }
+    .toolbar-actions button { background:rgba(30,41,59,0.8); border:1px solid #334155; color:#94a3b8; padding:0.375rem 0.75rem; border-radius:0.375rem; font-family:inherit; font-size:0.75rem; cursor:pointer; transition:all 0.2s; white-space:nowrap; }
+    .toolbar-actions button:hover { background:rgba(51,65,85,0.8); color:white; border-color:#475569; }
+    @media print { body{background:#020617;padding:1rem;} .toolbar{display:none !important;} }
+  </style>
+</head>
+<body>
+  <div class="container" id="report-container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>MotionLife 2.0 — Architecture</h1>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button onclick="copyAsImage(this)">📋 Copy</button>
+            <button onclick="downloadPNG(this)">🖼️ PNG</button>
+            <button onclick="downloadPDF(this)">📄 PDF</button>
+          </div>
+          <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
+        </div>
+      </div>
+      <p class="subtitle">VLM router finds every motion · specialized models extract it · mesh-warp applies it · VLM judge scores &amp; auto-tunes</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1100 680">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" /></marker>
+          <marker id="arrow-orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb923c" /></marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- ===== LEGEND (top strip, above all rows) ===== -->
+        <text x="24" y="34" fill="white" font-size="10" font-weight="600">Legend</text>
+        <rect x="86" y="26" width="14" height="9" rx="2" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="105" y="34" fill="#94a3b8" font-size="8">Browser / App (JS)</text>
+        <rect x="228" y="26" width="14" height="9" rx="2" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1"/>
+        <text x="247" y="34" fill="#94a3b8" font-size="8">VLM — Claude (server)</text>
+        <rect x="392" y="26" width="14" height="9" rx="2" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="411" y="34" fill="#94a3b8" font-size="8">ML model (server)</text>
+        <rect x="520" y="26" width="14" height="9" rx="2" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="539" y="34" fill="#94a3b8" font-size="8">Motion data / swatch</text>
+        <line x1="672" y1="31" x2="690" y2="31" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,3"/>
+        <text x="695" y="34" fill="#94a3b8" font-size="8">Auto-tune feedback</text>
+
+        <!-- Row band labels -->
+        <text x="24" y="86" fill="#64748b" font-size="9" font-weight="600" letter-spacing="1">① CAPTURE → EXTRACT  (upload a video, understand it, measure real motion)</text>
+        <text x="24" y="366" fill="#64748b" font-size="9" font-weight="600" letter-spacing="1">② APPLY → JUDGE → AUTO-TUNE  (paint onto artwork, evaluate, self-correct)</text>
+
+        <!-- ================= ARROWS FIRST (render behind boxes) ================= -->
+        <!-- Row A horizontal flow -->
+        <line x1="176" y1="133" x2="198" y2="133" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="362" y1="133" x2="384" y2="133" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="373" y="126" fill="#94a3b8" font-size="8" text-anchor="middle">motions[] · A</text>
+        <line x1="518" y1="133" x2="540" y2="133" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="734" y1="133" x2="756" y2="133" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="890" y1="133" x2="912" y2="133" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <!-- Swatch (row A, right) down into row B applicator -->
+        <path d="M 994 168 L 994 300 Q 994 312 984 312 L 992 312" fill="none" stroke="#a78bfa" stroke-width="1.5"/>
+        <line x1="994" y1="168" x2="994" y2="428" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="1010" y="300" fill="#94a3b8" font-size="8" text-anchor="middle" transform="rotate(90 1010 300)">swatch · B</text>
+        <!-- Row B right-to-left flow -->
+        <line x1="898" y1="463" x2="824" y2="463" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <line x1="658" y1="463" x2="584" y2="463" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="621" y="456" fill="#94a3b8" font-size="8" text-anchor="middle">N frames</text>
+        <!-- Judge -> Applicator auto-tune loop (orange dashed, bottom channel) -->
+        <path d="M 500 510 L 500 560 L 986 560 L 986 512" fill="none" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrow-orange)"/>
+        <text x="740" y="574" fill="#fb923c" font-size="8" text-anchor="middle">auto-tune Δ · report C  (loop ×2–3 until score ≥ threshold)</text>
+        <!-- Artwork -> auto-label -> applicator (named objects) -->
+        <line x1="176" y1="250" x2="198" y2="250" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path d="M 380 250 L 470 250 Q 486 250 486 266 L 486 440 Q 486 452 500 452 L 896 452" fill="none" stroke="#fb7185" stroke-width="1.3" stroke-dasharray="5,4"/>
+        <text x="690" y="444" fill="#fb7185" font-size="8" text-anchor="middle">named objects → match swatch↔layer</text>
+
+        <!-- ================= COMPONENT BOXES (opaque mask + styled) ================= -->
+        <!-- Row A -->
+        <rect x="24" y="105" width="152" height="56" rx="6" fill="#0f172a"/>
+        <rect x="24" y="105" width="152" height="56" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="100" y="128" fill="white" font-size="11" font-weight="600" text-anchor="middle">Upload Video</text>
+        <text x="100" y="145" fill="#94a3b8" font-size="8" text-anchor="middle">short clip · browser</text>
+
+        <rect x="200" y="103" width="162" height="60" rx="6" fill="#0f172a"/>
+        <rect x="200" y="103" width="162" height="60" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="281" y="126" fill="white" font-size="11" font-weight="600" text-anchor="middle">VLM Router</text>
+        <text x="281" y="141" fill="#94a3b8" font-size="8" text-anchor="middle">/decompose · multi-motion</text>
+        <text x="281" y="154" fill="#fb7185" font-size="7.5" text-anchor="middle">Claude (vision) · classify</text>
+
+        <rect x="386" y="105" width="132" height="56" rx="6" fill="#0f172a"/>
+        <rect x="386" y="105" width="132" height="56" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="452" y="128" fill="white" font-size="11" font-weight="600" text-anchor="middle">SAM 2</text>
+        <text x="452" y="145" fill="#94a3b8" font-size="8" text-anchor="middle">per-object mask</text>
+
+        <rect x="540" y="103" width="194" height="60" rx="6" fill="#0f172a"/>
+        <rect x="540" y="103" width="194" height="60" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="637" y="126" fill="white" font-size="11" font-weight="600" text-anchor="middle">SEA-RAFT + CoTracker3</text>
+        <text x="637" y="141" fill="#94a3b8" font-size="8" text-anchor="middle">flow + long-range tracks</text>
+        <text x="637" y="154" fill="#fbbf24" font-size="7.5" text-anchor="middle">full clip · occlusion-aware</text>
+
+        <rect x="756" y="105" width="134" height="56" rx="6" fill="#0f172a"/>
+        <rect x="756" y="105" width="134" height="56" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="823" y="126" fill="white" font-size="11" font-weight="600" text-anchor="middle">Distill</text>
+        <text x="823" y="141" fill="#94a3b8" font-size="8" text-anchor="middle">bulk + residual split</text>
+        <text x="823" y="154" fill="#94a3b8" font-size="7.5" text-anchor="middle">8 params + tracks</text>
+
+        <rect x="912" y="103" width="164" height="60" rx="6" fill="#0f172a"/>
+        <rect x="912" y="103" width="164" height="60" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="994" y="126" fill="white" font-size="11" font-weight="600" text-anchor="middle">Motion Swatch</text>
+        <text x="994" y="141" fill="#94a3b8" font-size="8" text-anchor="middle">reusable · editable</text>
+        <text x="994" y="154" fill="#a78bfa" font-size="7.5" text-anchor="middle">Contract B</text>
+
+        <!-- Artwork + auto-label (left mid) -->
+        <rect x="24" y="222" width="152" height="56" rx="6" fill="#0f172a"/>
+        <rect x="24" y="222" width="152" height="56" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="100" y="245" fill="white" font-size="11" font-weight="600" text-anchor="middle">Upload Artwork</text>
+        <text x="100" y="262" fill="#94a3b8" font-size="8" text-anchor="middle">SVG / raster · browser</text>
+
+        <rect x="200" y="222" width="180" height="56" rx="6" fill="#0f172a"/>
+        <rect x="200" y="222" width="180" height="56" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="290" y="245" fill="white" font-size="11" font-weight="600" text-anchor="middle">VLM Layer Auto-label</text>
+        <text x="290" y="262" fill="#94a3b8" font-size="8" text-anchor="middle">names SVG objects</text>
+
+        <!-- Row B -->
+        <rect x="896" y="428" width="180" height="84" rx="6" fill="#0f172a"/>
+        <rect x="896" y="428" width="180" height="84" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="986" y="452" fill="white" font-size="11" font-weight="600" text-anchor="middle">Application Engine</text>
+        <text x="986" y="469" fill="#94a3b8" font-size="8" text-anchor="middle">class-keyed applicator</text>
+        <text x="986" y="483" fill="#94a3b8" font-size="8" text-anchor="middle">MLS / ARAP mesh warp</text>
+        <text x="986" y="500" fill="#22d3ee" font-size="7.5" text-anchor="middle">animate.js · browser</text>
+
+        <rect x="658" y="430" width="166" height="70" rx="6" fill="#0f172a"/>
+        <rect x="658" y="430" width="166" height="70" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="741" y="454" fill="white" font-size="11" font-weight="600" text-anchor="middle">Canvas / Preview</text>
+        <text x="741" y="471" fill="#94a3b8" font-size="8" text-anchor="middle">render · play · export</text>
+        <text x="741" y="486" fill="#94a3b8" font-size="7.5" text-anchor="middle">Before | After | source</text>
+
+        <rect x="420" y="430" width="164" height="82" rx="6" fill="#0f172a"/>
+        <rect x="420" y="430" width="164" height="82" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="502" y="454" fill="white" font-size="11" font-weight="600" text-anchor="middle">VLM Judge</text>
+        <text x="502" y="471" fill="#94a3b8" font-size="8" text-anchor="middle">/judge · scores the result</text>
+        <text x="502" y="485" fill="#94a3b8" font-size="8" text-anchor="middle">issues + param deltas</text>
+        <text x="502" y="501" fill="#fb7185" font-size="7.5" text-anchor="middle">Claude (vision) · Contract C</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header"><div class="card-dot rose"></div><h3>VLM (Claude) — the brain</h3></div>
+        <ul>
+          <li>• <b>Router:</b> finds every motion in a clip (multi-motion), classifies each</li>
+          <li>• <b>Auto-labeler:</b> names artwork objects (retires hand-labeling)</li>
+          <li>• <b>Judge:</b> scores the applied motion, returns fix deltas</li>
+          <li>• Understands &amp; decides — never produces the motion itself</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot amber"></div><h3>ML models — the muscle</h3></div>
+        <ul>
+          <li>• <b>SAM 2:</b> precise per-object masks from VLM boxes</li>
+          <li>• <b>SEA-RAFT:</b> fast, clean optical flow</li>
+          <li>• <b>CoTracker3:</b> real long-range point trajectories</li>
+          <li>• <b>Distill:</b> keeps bulk + residual → travel <i>and</i> texture</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header"><div class="card-dot cyan"></div><h3>Application + loop</h3></div>
+        <ul>
+          <li>• <b>Class-keyed applicator:</b> routes by motion class, not layer name</li>
+          <li>• <b>MLS / ARAP mesh warp:</b> large, natural, no tearing</li>
+          <li>• <b>Auto-tune:</b> apply → render → judge → Δ → repeat ×2–3</li>
+          <li>• Contracts A/B/C decouple the three streams</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">
+      MotionLife 2.0 • VLM router + specialized extractors + VLM judge/auto-tune • diagram via Cocoon-AI architecture skill
+    </p>
+  </div>
+
+  <script>
+    async function copyAsImage(btn){const orig=btn.textContent;try{const el=document.getElementById('report-container');const r=el.getBoundingClientRect();const pad=32;const canvas=await html2canvas(document.body,{backgroundColor:'#020617',scale:2,useCORS:true,ignoreElements:(e)=>e.classList&&e.classList.contains('toolbar'),x:r.left+window.scrollX-pad,y:r.top+window.scrollY-pad,width:r.width+pad*2,height:r.height+pad*2});const blob=await new Promise(r=>canvas.toBlob(r,'image/png'));await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]);btn.textContent='✓ Copied!';}catch(e){btn.textContent='✗ Failed';}setTimeout(()=>btn.textContent=orig,2000);}
+    async function downloadPNG(btn){const orig=btn.textContent;btn.textContent='⏳ ...';try{const el=document.getElementById('report-container');const r=el.getBoundingClientRect();const pad=32;const canvas=await html2canvas(document.body,{backgroundColor:'#020617',scale:2,useCORS:true,ignoreElements:(e)=>e.classList&&e.classList.contains('toolbar'),x:r.left+window.scrollX-pad,y:r.top+window.scrollY-pad,width:r.width+pad*2,height:r.height+pad*2});const link=document.createElement('a');link.download='motionlife-architecture.png';link.href=canvas.toDataURL('image/png');link.click();btn.textContent='✓ Done!';}catch(e){btn.textContent='✗ Failed';}setTimeout(()=>btn.textContent=orig,2000);}
+    async function downloadPDF(btn){const orig=btn.textContent;btn.textContent='⏳ ...';try{const el=document.getElementById('report-container');const r=el.getBoundingClientRect();const pad=32;const canvas=await html2canvas(document.body,{backgroundColor:'#020617',scale:2,useCORS:true,ignoreElements:(e)=>e.classList&&e.classList.contains('toolbar'),x:r.left+window.scrollX-pad,y:r.top+window.scrollY-pad,width:r.width+pad*2,height:r.height+pad*2});const imgData=canvas.toDataURL('image/png');const {jsPDF}=window.jspdf;const orientation=canvas.width>canvas.height?'landscape':'portrait';const pdf=new jsPDF({orientation,unit:'px',format:[canvas.width,canvas.height],hotfixes:['px_scaling']});pdf.addImage(imgData,'PNG',0,0,canvas.width,canvas.height);pdf.save('motionlife-architecture.pdf');btn.textContent='✓ Done!';}catch(e){btn.textContent='✗ Failed';}setTimeout(()=>btn.textContent=orig,2000);}
+  </script>
+</body>
+</html>
