@@ -822,16 +822,20 @@ class Animator {
     const wrap = s.wrap;
     if (!s._char || s._charMotion !== motion.id) {
       const q = r => wrap.querySelector(`[data-role="${r}"]`);
-      const rigEl = wrap.querySelector('[data-leg]');
+      const rigEl = wrap.querySelector('[data-leg], [data-char-mode]');
       const frames = motion.pose.frames.filter(Boolean);
       const jn = {}; motion.pose.joints.forEach((n, i) => jn[n] = i);
       // mean hip / nose Y to centre the vertical bob
       let sh = 0, sn = 0;
       for (const f of frames) { sh += (f[jn.l_hip][1] + f[jn.r_hip][1]) / 2; sn += f[jn.nose][1]; }
+      let bb; try { bb = wrap.getBBox(); } catch (_) { bb = { x: 0, y: 0, width: 1, height: 1 }; }
       s._char = {
         frames, jn, fps: motion.pose.fps || 15,
         meanHipY: sh / frames.length, meanNoseY: sn / frames.length,
         leg: parseFloat(rigEl && rigEl.getAttribute('data-leg')) || 150,
+        // whole-body puppet mode when the artwork can't be split into limbs
+        puppet: (rigEl && rigEl.getAttribute('data-char-mode') === 'puppet'),
+        pivotX: bb.x + bb.width / 2, pivotY: bb.y + bb.height,   // feet (bottom-centre)
         legFar: q('leg-far'), footFar: q('foot-far'),
         legNear: q('leg-near'), footNear: q('foot-near'),
         body: q('body'), head: q('head'),
@@ -845,13 +849,34 @@ class Animator {
       s._charMotion = motion.id;
     }
     const c = s._char, jn = c.jn, F = c.frames, n = F.length;
-    if (!n || !c.body) { return; }
+    if (!n) { return; }
     const fi = Math.floor((t * c.fps) % n);
     const f = F[fi];
     const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
     const hipC = mid(f[jn.l_hip], f[jn.r_hip]);
     const shoC = mid(f[jn.l_sho], f[jn.r_sho]);
     const nose = f[jn.nose];
+
+    // ---- WHOLE-BODY PUPPET (flat art that can't be split into limbs) ----
+    // Drive the whole figure with the captured gait: bounce (hips rise/fall),
+    // weight-shift sway (toward the planted foot), a small lean, and a squash
+    // on each footfall. Reads as a lively march/step-in-place.
+    if (c.puppet || !c.body) {
+      const bounce = -(hipC[1] - c.meanHipY) * 260 * intensity;              // up when hips rise
+      const sway = (f[jn.r_ank][1] - f[jn.l_ank][1]) * 130 * intensity;      // toward planted foot
+      const lean = sway * 0.06;                                             // lean into the step (deg)
+      const down = Math.max(0, (hipC[1] - c.meanHipY)) * 6;                  // 0..~1 at footfall
+      const sy = 1 - Math.min(0.06, down * 0.06) * intensity;
+      const sx = 1 + Math.min(0.06, down * 0.06) * intensity;
+      const px = c.pivotX, py = c.pivotY;
+      wrap.setAttribute('transform',
+        `translate(${sway.toFixed(2)} ${bounce.toFixed(2)}) ` +
+        `rotate(${lean.toFixed(2)} ${px.toFixed(1)} ${py.toFixed(1)}) ` +
+        `translate(${px.toFixed(1)} ${py.toFixed(1)}) scale(${sx.toFixed(4)} ${sy.toFixed(4)}) ` +
+        `translate(${(-px).toFixed(1)} ${(-py).toFixed(1)})`);
+      return;
+    }
+
     const bob = (hipC[1] - c.meanHipY) * 150 * intensity;
     const tiltDeg = Math.atan2(shoC[1] - hipC[1], (shoC[0] - hipC[0]) || 1e-3) * 180 / Math.PI * 0.12 - 10.8;
     c.body.setAttribute('transform', `translate(0 ${bob.toFixed(2)}) rotate(${tiltDeg.toFixed(2)})`);

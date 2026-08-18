@@ -211,7 +211,7 @@ let currentScene = 'poster';
 // an uploaded artwork (so the .layer[data-name] contract makes objects selectable)
 const FILE_SCENES = {
   train: 'assets/scenes/train-window-adobe.svg',
-  character: 'assets/scenes/character-duck.svg',
+  character: 'assets/scenes/character-bear.svg',
 };
 
 async function loadScene(name) {
