@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MotionLife — HLD: Pluggable Motion Backend Registry</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'JetBrains Mono',monospace;background:#020617;min-height:100vh;padding:2rem;color:#e5e9f0}
+  .container{max-width:1240px;margin:0 auto}
+  .header{margin-bottom:2rem}
+  .header-row{display:flex;align-items:center;gap:1rem;margin-bottom:.5rem}
+  .pulse-dot{width:12px;height:12px;background:#22d3ee;border-radius:50%;animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+  h1{font-size:1.5rem;font-weight:700;letter-spacing:-.025em;color:#fff}
+  .subtitle{color:#94a3b8;font-size:.9rem;margin-left:1.75rem}
+  .diagram-container{background:rgba(15,23,42,.5);border-radius:1rem;border:1px solid #1e293b;padding:1.5rem;overflow-x:auto}
+  svg{width:100%;min-width:1000px;display:block}
+  h2.section{font-size:1.05rem;color:#fff;margin:2.4rem 0 .3rem;letter-spacing:.02em}
+  h2.section .bar{display:inline-block;width:26px;height:3px;background:linear-gradient(90deg,#22d3ee,#8b5cf6);vertical-align:middle;margin-right:.6rem;border-radius:2px}
+  .lead{color:#94a3b8;font-size:.85rem;margin-bottom:1rem}
+  .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:1rem}
+  .step{background:rgba(15,23,42,.55);border:1px solid #1e293b;border-radius:.8rem;padding:1.1rem 1.2rem}
+  .step .n{font-size:.72rem;font-weight:800;letter-spacing:.12em;color:#22d3ee}
+  .step h3{font-size:1.02rem;color:#fff;margin:.25rem 0 .5rem}
+  .step .do{color:#c9cee0;font-size:.86rem;line-height:1.5;margin-bottom:.7rem}
+  .step .io{font-size:.8rem;line-height:1.5;color:#94a3b8}
+  .step .io b{color:#cbd5e1;font-weight:600}
+  .step .io .in{color:#7dd3fc}.step .io .out{color:#86efac}.step .io .exp{color:#fbbf24}
+  .footer{text-align:center;margin-top:2rem;color:#475569;font-size:.75rem}
+  .toolbar{display:flex;gap:.5rem;margin-left:auto;flex-shrink:0;align-items:center}
+  .toolbar-toggle{background:transparent;border:none;color:#475569;cursor:pointer;font-size:1.25rem;line-height:1;padding:.25rem .5rem;border-radius:.375rem}
+  .toolbar-toggle:hover{color:#94a3b8;background:rgba(30,41,59,.5)}
+  .toolbar-actions{display:none;gap:.5rem}.toolbar.expanded .toolbar-actions{display:flex}
+  .toolbar-actions button{background:rgba(30,41,59,.8);border:1px solid #334155;color:#94a3b8;padding:.375rem .75rem;border-radius:.375rem;font-family:inherit;font-size:.75rem;cursor:pointer}
+  .toolbar-actions button:hover{background:rgba(51,65,85,.8);color:#fff}
+  @media print{body{background:#020617}.toolbar{display:none!important}}
+</style>
+</head>
+<body>
+  <div class="container" id="report-container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>MotionLife — HLD: Pluggable Motion Backend Registry</h1>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button onclick="copyAsImage(this)">📋 Copy</button>
+            <button onclick="downloadPNG(this)">🖼️ PNG</button>
+            <button onclick="downloadPDF(this)">📄 PDF</button>
+          </div>
+          <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export">⋯</button>
+        </div>
+      </div>
+      <p class="subtitle">One VLM router → many specialized extractors → one unified swatch → class-aware apply → VLM judge & auto-tune</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1160 720">
+        <defs>
+          <marker id="ah" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+          <marker id="ao" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#fb923c"/></marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/></pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)"/>
+
+        <!-- legend -->
+        <text x="24" y="34" fill="#fff" font-size="10" font-weight="600">Legend</text>
+        <rect x="86" y="26" width="13" height="9" rx="2" fill="rgba(8,51,68,.4)" stroke="#22d3ee"/><text x="104" y="34" fill="#94a3b8" font-size="8">Input / App</text>
+        <rect x="196" y="26" width="13" height="9" rx="2" fill="rgba(136,19,55,.4)" stroke="#fb7185"/><text x="214" y="34" fill="#94a3b8" font-size="8">VLM (Claude)</text>
+        <rect x="316" y="26" width="13" height="9" rx="2" fill="rgba(120,53,15,.3)" stroke="#fbbf24"/><text x="334" y="34" fill="#94a3b8" font-size="8">Backend model</text>
+        <rect x="452" y="26" width="13" height="9" rx="2" fill="rgba(76,29,149,.4)" stroke="#a78bfa"/><text x="470" y="34" fill="#94a3b8" font-size="8">Motion data</text>
+        <line x1="576" y1="31" x2="594" y2="31" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="4,3"/><text x="600" y="34" fill="#94a3b8" font-size="8">Auto-tune loop</text>
+
+        <!-- arrows first -->
+        <line x1="166" y1="176" x2="196" y2="205" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ah)"/>
+        <line x1="166" y1="286" x2="196" y2="250" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ah)"/>
+        <line x1="352" y1="226" x2="382" y2="226" stroke="#fb7185" stroke-width="1.5" marker-end="url(#ah)"/>
+        <text x="367" y="219" fill="#94a3b8" font-size="8" text-anchor="middle">route</text>
+        <line x1="748" y1="226" x2="786" y2="212" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#ah)"/>
+        <text x="767" y="205" fill="#94a3b8" font-size="8" text-anchor="middle">tracks</text>
+        <line x1="862" y1="250" x2="862" y2="316" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ah)"/>
+        <line x1="862" y1="416" x2="862" y2="462" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ah)"/>
+        <line x1="862" y1="536" x2="862" y2="582" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#ah)"/>
+        <text x="878" y="562" fill="#94a3b8" font-size="8">frames</text>
+        <!-- judge -> application loop -->
+        <path d="M 786 620 L 700 620 L 700 360 L 786 360" fill="none" stroke="#fb923c" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#ao)"/>
+        <text x="694" y="490" fill="#fb923c" font-size="8" text-anchor="middle" transform="rotate(-90 694 490)">auto-tune Δ (loop ×2–3)</text>
+
+        <!-- inputs -->
+        <rect x="24" y="150" width="142" height="52" rx="6" fill="#0f172a"/><rect x="24" y="150" width="142" height="52" rx="6" fill="rgba(8,51,68,.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="95" y="172" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">Video upload</text>
+        <text x="95" y="188" fill="#94a3b8" font-size="8" text-anchor="middle">any clip</text>
+        <rect x="24" y="260" width="142" height="52" rx="6" fill="#0f172a"/><rect x="24" y="260" width="142" height="52" rx="6" fill="rgba(8,51,68,.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="95" y="282" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">Text prompt</text>
+        <text x="95" y="298" fill="#94a3b8" font-size="8" text-anchor="middle">"walk & wave"</text>
+
+        <!-- VLM router -->
+        <rect x="196" y="166" width="156" height="120" rx="6" fill="#0f172a"/><rect x="196" y="166" width="156" height="120" rx="6" fill="rgba(136,19,55,.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="274" y="196" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">VLM Router</text>
+        <text x="274" y="213" fill="#94a3b8" font-size="8" text-anchor="middle">Claude (vision)</text>
+        <text x="274" y="232" fill="#e5e9f0" font-size="8" text-anchor="middle">• find every motion</text>
+        <text x="274" y="246" fill="#e5e9f0" font-size="8" text-anchor="middle">• classify the type</text>
+        <text x="274" y="260" fill="#e5e9f0" font-size="8" text-anchor="middle">• pick the backend</text>
+        <text x="274" y="277" fill="#fb7185" font-size="7.5" text-anchor="middle">Contract A</text>
+
+        <!-- backend registry -->
+        <rect x="382" y="70" width="366" height="600" rx="12" fill="rgba(251,191,36,.05)" stroke="#fbbf24" stroke-width="1" stroke-dasharray="8,4"/>
+        <text x="398" y="90" fill="#fbbf24" font-size="10" font-weight="600">Pluggable Backend Registry — one entry per motion class</text>
+
+        <!-- A -->
+        <rect x="398" y="104" width="334" height="96" rx="8" fill="rgba(120,53,15,.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="410" y="122" fill="#fff" font-size="10" font-weight="600">A · Living things (articulated)</text>
+        <text x="410" y="140" fill="#e5e9f0" font-size="8.5">• Human body → MediaPipe Pose ✅ / WHAM (3D)</text>
+        <text x="410" y="156" fill="#e5e9f0" font-size="8.5">• Hands → MediaPipe Hands   • Face → FaceLandmarker</text>
+        <text x="410" y="172" fill="#e5e9f0" font-size="8.5">• Animals → DeepLabCut / MMPose (AP-10K)</text>
+        <text x="410" y="190" fill="#94a3b8" font-size="8">→ skeleton / landmark sequence</text>
+
+        <!-- B -->
+        <rect x="398" y="210" width="334" height="88" rx="8" fill="rgba(120,53,15,.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="410" y="228" fill="#fff" font-size="10" font-weight="600">B · Non-rigid texture / fluid / flock</text>
+        <text x="410" y="246" fill="#e5e9f0" font-size="8.5">• Flag/water/smoke/clouds → RAFT / SEA-RAFT ✅</text>
+        <text x="410" y="262" fill="#e5e9f0" font-size="8.5">• Long-range → CoTracker3 / TAPIR</text>
+        <text x="410" y="278" fill="#e5e9f0" font-size="8.5">• Subtle → Eulerian motion magnification</text>
+        <text x="410" y="293" fill="#94a3b8" font-size="8">→ dense flow field / point tracks</text>
+
+        <!-- C -->
+        <rect x="398" y="308" width="334" height="74" rx="8" fill="rgba(120,53,15,.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="410" y="326" fill="#fff" font-size="10" font-weight="600">C · Discrete objects on a path</text>
+        <text x="410" y="344" fill="#e5e9f0" font-size="8.5">• Boat/car/bird → YOLO/RT-DETR + ByteTrack</text>
+        <text x="410" y="360" fill="#e5e9f0" font-size="8.5">• Rigid 6DoF → FoundationPose / Objectron</text>
+        <text x="410" y="376" fill="#94a3b8" font-size="8">→ per-object trajectory / 3D pose</text>
+
+        <!-- D -->
+        <rect x="398" y="392" width="334" height="88" rx="8" fill="rgba(120,53,15,.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="410" y="410" fill="#fff" font-size="10" font-weight="600">D · Pre-step helpers</text>
+        <text x="410" y="428" fill="#e5e9f0" font-size="8.5">• SAM 2 → clean object mask</text>
+        <text x="410" y="444" fill="#e5e9f0" font-size="8.5">• Depth Anything V2 → parallax / foreshortening</text>
+        <text x="410" y="460" fill="#e5e9f0" font-size="8.5">• DROID-SLAM / homography → camera vs object</text>
+        <text x="410" y="475" fill="#94a3b8" font-size="8">→ masks / depth / camera motion</text>
+
+        <!-- E -->
+        <rect x="398" y="490" width="334" height="66" rx="8" fill="rgba(120,53,15,.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="410" y="508" fill="#fff" font-size="10" font-weight="600">E · No video — generate motion</text>
+        <text x="410" y="526" fill="#e5e9f0" font-size="8.5">• Text → motion → MDM / MotionGPT</text>
+        <text x="410" y="542" fill="#94a3b8" font-size="8">→ synthetic skeletal motion</text>
+
+        <text x="565" y="588" fill="#fbbf24" font-size="8" text-anchor="middle">distill → normalize → unified swatch schema (Contract B)</text>
+
+        <!-- swatch -->
+        <rect x="786" y="180" width="152" height="70" rx="6" fill="#0f172a"/><rect x="786" y="180" width="152" height="70" rx="6" fill="rgba(76,29,149,.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="862" y="205" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">Motion Swatch</text>
+        <text x="862" y="221" fill="#94a3b8" font-size="8" text-anchor="middle">unified · editable</text>
+        <text x="862" y="237" fill="#a78bfa" font-size="7.5" text-anchor="middle">params · tracks · pose · class</text>
+
+        <!-- application -->
+        <rect x="786" y="316" width="152" height="100" rx="6" fill="#0f172a"/><rect x="786" y="316" width="152" height="100" rx="6" fill="rgba(8,51,68,.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="862" y="340" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">Application</text>
+        <text x="862" y="356" fill="#94a3b8" font-size="8" text-anchor="middle">class-keyed applicator</text>
+        <text x="862" y="372" fill="#e5e9f0" font-size="8" text-anchor="middle">deform · mesh-warp</text>
+        <text x="862" y="386" fill="#e5e9f0" font-size="8" text-anchor="middle">skeletal rig · puppet</text>
+        <text x="862" y="400" fill="#e5e9f0" font-size="8" text-anchor="middle">object-path</text>
+
+        <!-- render -->
+        <rect x="786" y="462" width="152" height="62" rx="6" fill="#0f172a"/><rect x="786" y="462" width="152" height="62" rx="6" fill="rgba(8,51,68,.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="862" y="486" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">Render / Preview</text>
+        <text x="862" y="502" fill="#94a3b8" font-size="8" text-anchor="middle">SVG · play · export</text>
+
+        <!-- judge -->
+        <rect x="786" y="582" width="152" height="78" rx="6" fill="#0f172a"/><rect x="786" y="582" width="152" height="78" rx="6" fill="rgba(136,19,55,.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="862" y="606" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">VLM Judge</text>
+        <text x="862" y="622" fill="#94a3b8" font-size="8" text-anchor="middle">score + issues + Δ</text>
+        <text x="862" y="638" fill="#fb7185" font-size="7.5" text-anchor="middle">Claude · Contract C</text>
+      </svg>
+    </div>
+
+    <!-- ===== STEP DESCRIPTIONS ===== -->
+    <h2 class="section"><span class="bar"></span>Step-by-step — what each stage does (input → output → expect)</h2>
+    <p class="lead">The pipeline is a chain of well-defined hand-offs (Contracts A/B/C). Each step is independently testable.</p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="n">STEP 1</div><h3>Input</h3>
+        <div class="do">The user uploads a video (any real clip) or types a text prompt. This is the only thing the user has to provide.</div>
+        <div class="io"><b><span class="in">In:</span></b> .mp4 clip, or a text string.<br><b><span class="out">Out:</span></b> raw media handed to the router.<br><b><span class="exp">Expect:</span></b> works for one clip or a multi-motion clip; text path skips extraction entirely.</div>
+      </div>
+
+      <div class="step">
+        <div class="n">STEP 2</div><h3>VLM Router (classify + decompose)</h3>
+        <div class="do">A vision-language model watches sampled frames and answers: what is moving, how many distinct motions, and each one's class. It picks which backend handles each.</div>
+        <div class="io"><b><span class="in">In:</span></b> sampled video frames (+ artwork for object matching).<br><b><span class="out">Out:</span></b> <b>Contract A</b> — a list of {object, class, bbox, confidence}.<br><b><span class="exp">Expect:</span></b> a flag+smoke+birds clip returns 3 entries, no filename hints; low-confidence dropped.</div>
+      </div>
+
+      <div class="step">
+        <div class="n">STEP 3</div><h3>Pre-step helpers (D)</h3>
+        <div class="do">Optional refiners the router invokes before extraction: SAM 2 tightens the bbox into a clean mask; Depth Anything adds depth; SLAM/homography separates camera motion from object motion.</div>
+        <div class="io"><b><span class="in">In:</span></b> region bbox + frames.<br><b><span class="out">Out:</span></b> precise mask / depth map / camera transform.<br><b><span class="exp">Expect:</span></b> tracking runs only on the object, not the background; near objects can move more than far.</div>
+      </div>
+
+      <div class="step">
+        <div class="n">STEP 4</div><h3>Backend extraction (A/B/C/E)</h3>
+        <div class="do">Each detected motion is routed to the right model: skeleton for bodies, flow/point-tracks for texture/fluid, detect+track for object paths, or text-to-motion when there's no video.</div>
+        <div class="io"><b><span class="in">In:</span></b> masked frames + motion class.<br><b><span class="out">Out:</span></b> raw motion (skeleton seq / flow field / tracks / path).<br><b><span class="exp">Expect:</span></b> real full-clip motion; adding a new backend = one new registry entry, nothing else changes.</div>
+      </div>
+
+      <div class="step">
+        <div class="n">STEP 5</div><h3>Distill → unified Motion Swatch</h3>
+        <div class="do">Whatever the backend produced is normalized into one common swatch schema so the app treats every motion type the same way.</div>
+        <div class="io"><b><span class="in">In:</span></b> backend-specific raw motion.<br><b><span class="out">Out:</span></b> <b>Contract B</b> — {class, params, tracks?, pose?, bulk, fps}.<br><b><span class="exp">Expect:</span></b> a reusable, editable, scale-free asset that appears in the library like any swatch.</div>
+      </div>
+
+      <div class="step">
+        <div class="n">STEP 6</div><h3>Application (class-keyed)</h3>
+        <div class="do">The applicator branches on the swatch's <em>class</em>, not the layer name: texture→mesh deform, human→skeletal rig, flat character→puppet, object→path travel.</div>
+        <div class="io"><b><span class="in">In:</span></b> swatch + selected artwork object.<br><b><span class="out">Out:</span></b> the object animating in place.<br><b><span class="exp">Expect:</span></b> right behavior fires from the class; renaming a layer no longer matters (retires name-hardcoding).</div>
+      </div>
+
+      <div class="step">
+        <div class="n">STEP 7</div><h3>Render / Preview</h3>
+        <div class="do">The deformed/transformed artwork is drawn each frame (SVG/Canvas), played back, and can be exported. Frames are also captured for the judge.</div>
+        <div class="io"><b><span class="in">In:</span></b> per-frame transformed artwork.<br><b><span class="out">Out:</span></b> live animation + N sampled frames + SVG/video export.<br><b><span class="exp">Expect:</span></b> smooth playback; Before/After + source clip in the preview.</div>
+      </div>
+
+      <div class="step">
+        <div class="n">STEP 8</div><h3>VLM Judge</h3>
+        <div class="do">A vision-language model scores the rendered result against the reference clip, lists what's wrong, and proposes parameter deltas.</div>
+        <div class="io"><b><span class="in">In:</span></b> rendered frames + reference + class.<br><b><span class="out">Out:</span></b> <b>Contract C</b> — {score, issues, suggest:{Δ}}.<br><b><span class="exp">Expect:</span></b> "flag barely moves → +40% intensity"; class-specific rubric (torn flag, sliding water).</div>
+      </div>
+
+      <div class="step">
+        <div class="n">STEP 9</div><h3>Auto-tune loop</h3>
+        <div class="do">The judge's deltas are applied, re-rendered, re-judged — 2–3 iterations or until the score passes. The system corrects its own output.</div>
+        <div class="io"><b><span class="in">In:</span></b> judge deltas.<br><b><span class="out">Out:</span></b> a tuned swatch that scores above threshold.<br><b><span class="exp">Expect:</span></b> a deliberately weak motion visibly improves and the loop stops on success.</div>
+      </div>
+
+      <div class="step">
+        <div class="n">STEP 10</div><h3>Output</h3>
+        <div class="do">Final animated artwork — exported as animated SVG or video — with the original artwork preserved pixel-for-pixel and the swatch reusable on other objects.</div>
+        <div class="io"><b><span class="in">In:</span></b> tuned, playing scene.<br><b><span class="out">Out:</span></b> exported animation + saved swatches.<br><b><span class="exp">Expect:</span></b> nothing redrawn; the same swatch re-applies to any compatible object.</div>
+      </div>
+    </div>
+
+    <p class="footer">MotionLife HLD • pluggable backend registry • VLM router + judge • diagram style: Cocoon-AI architecture skill</p>
+  </div>
+
+  <script>
+    async function cap(){const el=document.getElementById('report-container');const r=el.getBoundingClientRect();const pad=32;return await html2canvas(document.body,{backgroundColor:'#020617',scale:2,useCORS:true,ignoreElements:e=>e.classList&&e.classList.contains('toolbar'),x:r.left+scrollX-pad,y:r.top+scrollY-pad,width:r.width+pad*2,height:r.height+pad*2});}
+    async function copyAsImage(b){const o=b.textContent;try{const c=await cap();const bl=await new Promise(r=>c.toBlob(r,'image/png'));await navigator.clipboard.write([new ClipboardItem({'image/png':bl})]);b.textContent='✓ Copied!';}catch(e){b.textContent='✗ Failed';}setTimeout(()=>b.textContent=o,2000);}
+    async function downloadPNG(b){const o=b.textContent;b.textContent='⏳ ...';try{const c=await cap();const a=document.createElement('a');a.download='motionlife-hld.png';a.href=c.toDataURL('image/png');a.click();b.textContent='✓ Done!';}catch(e){b.textContent='✗ Failed';}setTimeout(()=>b.textContent=o,2000);}
+    async function downloadPDF(b){const o=b.textContent;b.textContent='⏳ ...';try{const c=await cap();const {jsPDF}=window.jspdf;const or=c.width>c.height?'landscape':'portrait';const pdf=new jsPDF({orientation:or,unit:'px',format:[c.width,c.height],hotfixes:['px_scaling']});pdf.addImage(c.toDataURL('image/png'),'PNG',0,0,c.width,c.height);pdf.save('motionlife-hld.pdf');b.textContent='✓ Done!';}catch(e){b.textContent='✗ Failed';}setTimeout(()=>b.textContent=o,2000);}
+  </script>
+</body>
+</html>
