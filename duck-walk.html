@@ -42,10 +42,13 @@
   </div>
 
   <div class="controls">
+    <button id="upload">⬆ Upload walking video</button>
+    <input id="file" type="file" accept="video/*" hidden>
     <button id="play">⏸ Pause</button>
     <label>Speed <input id="speed" type="range" min="0.3" max="2" step="0.1" value="1"></label>
     <label>Stride <input id="stride" type="range" min="0.6" max="1.6" step="0.05" value="1"></label>
   </div>
+  <div id="ustatus" style="color:#9aa0b5;font-size:.85rem;min-height:1.2em"></div>
 
 <script>
 const SVGNS="http://www.w3.org/2000/svg";
@@ -133,13 +136,36 @@ function draw(){
 }
 function req(){requestAnimationFrame(draw);}
 
-fetch('assets/motion/walk-pose.json').then(r=>r.json()).then(d=>{
-  POSE=d; d.joints.forEach((n,i)=>J[n]=i);
-  // mean hip/nose y for bob centering
-  let sh=0,sn=0;for(const f of d.frames){sh+=(f[J.l_hip][1]+f[J.r_hip][1])/2;sn+=f[J.nose][1];}
-  meanHipY=sh/d.frames.length; meanNoseY=sn/d.frames.length;
-  req();
-}).catch(e=>{document.querySelector('header p').textContent='Could not load walk-pose.json — run via http:// (localhost:8000)';});
+function loadPose(d){
+  POSE={joints:d.joints, fps:d.fps, frames:d.frames.filter(f=>f)};
+  J={}; d.joints.forEach((n,i)=>J[n]=i);
+  let sh=0,sn=0; for(const f of POSE.frames){sh+=(f[J.l_hip][1]+f[J.r_hip][1])/2; sn+=f[J.nose][1];}
+  meanHipY=sh/POSE.frames.length; meanNoseY=sn/POSE.frames.length;
+  t0=performance.now(); if(playing) req();
+}
+
+fetch('assets/motion/walk-pose.json').then(r=>r.json()).then(loadPose)
+  .catch(()=>{document.querySelector('header p').textContent='Could not load walk-pose.json — run via http:// (localhost:8000)';});
+
+// ---- upload a walking video → extract motion → drive the duck ----
+const POSE_SVC = 'http://127.0.0.1:8770/extract';
+const ust = document.getElementById('ustatus');
+document.getElementById('upload').onclick=()=>document.getElementById('file').click();
+document.getElementById('file').onchange=async (e)=>{
+  const f=e.target.files[0]; if(!f) return;
+  ust.textContent='Uploading & extracting motion with MediaPipe… (first run downloads the model, ~10–20s)';
+  try{
+    const resp=await fetch(POSE_SVC,{method:'POST',body:f});
+    const d=await resp.json();
+    if(d.error) throw new Error(d.error);
+    if(!d.detected){ ust.textContent='No person detected in that clip — try a clear, full-body walking video.'; return; }
+    loadPose(d);
+    ust.textContent=`✓ Extracted a walk from "${f.name}" — ${d.detected}/${d.total} frames. The duck now walks like your video.`;
+  }catch(err){
+    ust.textContent='Could not reach the pose service. Start it:  service/pose_server.py  (port 8770). '+err.message;
+  }
+  e.target.value='';
+};
 </script>
 </body>
 </html>
