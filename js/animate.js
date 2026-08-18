@@ -383,6 +383,13 @@ class Animator {
         ? (s.center[0] * 0.01 + s.center[1] * 0.03)
         : (s.bounds.x * 0.01 + s.bounds.y * 0.03);
 
+      // ---- character / skeletal motion: a pose-sequence swatch drives a rig ----
+      if (s.kind === 'svg' && motion.pose && motion.pose.frames &&
+          s.wrap.querySelector('[data-motion-mode="character"], [data-role="body"]')) {
+        this._applyCharacter(s, motion, rt, intensity);
+        continue;
+      }
+
       // Keep dense canopy artwork intact; only sway its selectable overlay.
       if (s.kind === 'svg' && s.wrap.querySelector('[data-motion-role="tree-canopy"]')) {
         this._applyTreeLeaves(s, motion, rt, intensity);
@@ -804,6 +811,67 @@ class Animator {
       `translate(0 ${bob.toFixed(2)}) rotate(${rock.toFixed(3)} ${bp.px.toFixed(1)} ${bp.py.toFixed(1)})`);
   }
 
+  /*
+   * Character / skeletal motion. The swatch carries a captured pose sequence
+   * (motion.pose = {joints, fps, frames}) from MediaPipe. Drive a rigged
+   * character in the artwork: reposition its two legs (hip→knee→ankle) from the
+   * captured joints, and bob/tilt the body + head. The rig is drawn in a local
+   * frame centred on the body, so this math is position-independent.
+   */
+  _applyCharacter(s, motion, t, intensity) {
+    const wrap = s.wrap;
+    if (!s._char || s._charMotion !== motion.id) {
+      const q = r => wrap.querySelector(`[data-role="${r}"]`);
+      const rigEl = wrap.querySelector('[data-leg]');
+      const frames = motion.pose.frames.filter(Boolean);
+      const jn = {}; motion.pose.joints.forEach((n, i) => jn[n] = i);
+      // mean hip / nose Y to centre the vertical bob
+      let sh = 0, sn = 0;
+      for (const f of frames) { sh += (f[jn.l_hip][1] + f[jn.r_hip][1]) / 2; sn += f[jn.nose][1]; }
+      s._char = {
+        frames, jn, fps: motion.pose.fps || 15,
+        meanHipY: sh / frames.length, meanNoseY: sn / frames.length,
+        leg: parseFloat(rigEl && rigEl.getAttribute('data-leg')) || 150,
+        legFar: q('leg-far'), footFar: q('foot-far'),
+        legNear: q('leg-near'), footNear: q('foot-near'),
+        body: q('body'), head: q('head'),
+      };
+      // remember neutral geometry so pause/reset restores the standing pose
+      const cc = s._char;
+      cc.neutral = [cc.legFar, cc.legNear, cc.footFar, cc.footNear, cc.body, cc.head]
+        .filter(Boolean).map(el => ({ el,
+          points: el.getAttribute('points'), transform: el.getAttribute('transform'),
+          cx: el.getAttribute('cx'), cy: el.getAttribute('cy') }));
+      s._charMotion = motion.id;
+    }
+    const c = s._char, jn = c.jn, F = c.frames, n = F.length;
+    if (!n || !c.body) { return; }
+    const fi = Math.floor((t * c.fps) % n);
+    const f = F[fi];
+    const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const hipC = mid(f[jn.l_hip], f[jn.r_hip]);
+    const shoC = mid(f[jn.l_sho], f[jn.r_sho]);
+    const nose = f[jn.nose];
+    const bob = (hipC[1] - c.meanHipY) * 150 * intensity;
+    const tiltDeg = Math.atan2(shoC[1] - hipC[1], (shoC[0] - hipC[0]) || 1e-3) * 180 / Math.PI * 0.12 - 10.8;
+    c.body.setAttribute('transform', `translate(0 ${bob.toFixed(2)}) rotate(${tiltDeg.toFixed(2)})`);
+    if (c.head) {
+      const hy = -64 + bob + (nose[1] - c.meanNoseY) * 60;
+      c.head.setAttribute('transform', `translate(96 ${hy.toFixed(2)})`);
+    }
+    const LEG = c.leg * (0.5 + 0.6 * intensity), hipY = bob + 52;
+    const leg = (hip, knee, ank, anchorX, line, foot) => {
+      const h = f[jn[hip]], k = f[jn[knee]], a = f[jn[ank]];
+      const hx = anchorX, hy = hipY;
+      const kx = hx + (k[0] - h[0]) * LEG, ky = hy + (k[1] - h[1]) * LEG;
+      const ax = hx + (a[0] - h[0]) * LEG, ay = hy + (a[1] - h[1]) * LEG;
+      if (line) line.setAttribute('points', `${hx},${hy} ${kx.toFixed(1)},${ky.toFixed(1)} ${ax.toFixed(1)},${ay.toFixed(1)}`);
+      if (foot) { foot.setAttribute('cx', (ax + 8).toFixed(1)); foot.setAttribute('cy', (ay + 2).toFixed(1)); }
+    };
+    leg('r_hip', 'r_knee', 'r_ank', -14, c.legFar, c.footFar);
+    leg('l_hip', 'l_knee', 'l_ank', 14, c.legNear, c.footNear);
+  }
+
   _reset() {
     for (const s of this.sel.selections) {
       if (s._treeLeaves) {
@@ -812,6 +880,15 @@ class Animator {
       }
       if (s._leaves) {
         for (const lf of s._leaves) { lf.el.removeAttribute('transform'); lf.el.style.opacity = ''; }
+      }
+      if (s._char) {
+        for (const o of s._char.neutral || []) {
+          if (o.points != null) o.el.setAttribute('points', o.points); else o.el.removeAttribute('points');
+          if (o.transform != null) o.el.setAttribute('transform', o.transform); else o.el.removeAttribute('transform');
+          if (o.cx != null) o.el.setAttribute('cx', o.cx);
+          if (o.cy != null) o.el.setAttribute('cy', o.cy);
+        }
+        s._char = null; s._charMotion = null;
       }
       if (s._birds) { for (const bd of s._birds) { bd.el.removeAttribute('transform'); bd.el.style.opacity = ''; } s._birds = null; s._birdsMotion = null; }
       if (s._clouds) { for (const cd of s._clouds) cd.el.removeAttribute('transform'); s._clouds = null; s._cloudsMotion = null; }

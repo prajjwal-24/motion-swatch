@@ -194,6 +194,7 @@ function applyMotionToActive() {
     }
     if (s._leaves) { for (const lf of s._leaves) { lf.el.removeAttribute('transform'); lf.el.style.opacity = ''; } s._leaves = null; }
     s._wave = null; s._field = undefined; s._fieldMotion = null; s._text = undefined;
+    s._char = null; s._charMotion = null;
     showInspector(s);
     if (sel.mode === 'svg') sel._renderSVGHighlights(); else sel.redraw();
     return s.name;
@@ -210,6 +211,7 @@ let currentScene = 'poster';
 // an uploaded artwork (so the .layer[data-name] contract makes objects selectable)
 const FILE_SCENES = {
   train: 'assets/scenes/train-window-adobe.svg',
+  character: 'assets/scenes/character-duck.svg',
 };
 
 async function loadScene(name) {
@@ -559,6 +561,40 @@ $('motion-input').onchange = async (e) => {
   // show the clip in the Videos section
   const videoUrl = URL.createObjectURL(file);
   const videoRec = addVideoThumb(videoUrl, file.name.replace(/\.[^.]+$/, ''));
+
+  // CHARACTER MOTION: if the selected object is a rigged character, capture a
+  // real skeletal walk from the video (MediaPipe pose service) and build a
+  // pose-sequence swatch. Contextual — only fires when a character rig is active.
+  {
+    const act = sel.getActive();
+    const isRig = act && act.kind === 'svg' && act.wrap &&
+                  act.wrap.querySelector('[data-motion-mode="character"], [data-role="body"]');
+    if (isRig) {
+      $('upload-status').textContent = 'Extracting character motion with MediaPipe… (first run downloads the model)';
+      try {
+        const pose = await capture.captureCharacter(file);
+        if (!pose || !pose.detected) {
+          $('upload-status').textContent = 'No person detected — use a clear, full-body walking clip.';
+          e.target.value = ''; return;
+        }
+        const name = file.name.replace(/\.[^.]+$/, '') || 'Character Walk';
+        const motion = {
+          id: 'char-' + Date.now(), name, desc: `Character motion · MediaPipe (${pose.detected}/${pose.total} frames)`,
+          color: '#34d399', character: true,
+          pose: { joints: pose.joints, fps: pose.fps, frames: pose.frames.filter(Boolean) },
+          params: { frequency: 1, amplitude: 0.2, direction: 0, turbulence: 0, damping: 0, phaseSpread: 0 },
+          videoUrl, fromUpload: true, engine: 'mediapipe',
+        };
+        library.add(motion); videoRec.motionId = motion.id; renderMotionList();
+        library.select(motion.id); applyMotionToActive();
+        $('upload-status').textContent = `Added "${name}" — the character now walks like your video.`;
+        status(`Character motion "${name}" captured — driving ${act.name}.`, true);
+      } catch (err) {
+        $('upload-status').textContent = 'Pose service unreachable. Start it: service/pose_server.py (port 8770).';
+      }
+      e.target.value = ''; return;
+    }
+  }
 
   // DEMO: a falling-leaves clip → show the real extraction moment over the
   // video, but hand back a hand-tuned per-leaf fall that looks best on the art.

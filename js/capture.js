@@ -10,6 +10,7 @@
  */
 
 const SERVICE_URL = 'http://127.0.0.1:8765';
+const POSE_SERVICE_URL = 'http://127.0.0.1:8770';   // MediaPipe character-pose service
 
 class MotionCapture {
   constructor() {
@@ -27,6 +28,16 @@ class MotionCapture {
       const j = await r.json();
       return j.ok ? j : null;
     } catch { return null; }
+  }
+
+  /* Character / skeletal motion: POST the clip to the MediaPipe pose service,
+     which returns a captured pose sequence (joints + per-frame keypoints).
+     Returns {joints, fps, frames, detected, total} or null if unavailable. */
+  async captureCharacter(file) {
+    const resp = await fetch(POSE_SERVICE_URL + '/extract', { method: 'POST', body: file });
+    const j = await resp.json();
+    if (j.error) throw new Error(j.error);
+    return j;
   }
 
   async captureFromFile(file) {
