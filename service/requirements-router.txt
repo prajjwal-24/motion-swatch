@@ -1,0 +1,4 @@
+# VLM Router service — Claude vision + frame sampling.
+anthropic>=0.40
+opencv-python
+numpy

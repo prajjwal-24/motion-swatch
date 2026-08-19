@@ -11,6 +11,7 @@
 
 const SERVICE_URL = 'http://127.0.0.1:8765';
 const POSE_SERVICE_URL = 'http://127.0.0.1:8770';   // MediaPipe character-pose service
+const ROUTER_SERVICE_URL = 'http://127.0.0.1:8771'; // VLM Router (motion decomposition)
 
 class MotionCapture {
   constructor() {
@@ -28,6 +29,23 @@ class MotionCapture {
       const j = await r.json();
       return j.ok ? j : null;
     } catch { return null; }
+  }
+
+  /* VLM Router (Step 1): POST the clip to the router, which asks Claude vision to
+     decompose it into distinct motions. Returns Contract-A JSON
+     { static, motions:[{ id, label, class, bbox, confidence, backend, applicator }] }
+     or null if the router isn't running. Used to auto-classify/route a clip instead
+     of guessing from filenames or layer names. */
+  async decomposeMotion(file) {
+    try {
+      const resp = await fetch(ROUTER_SERVICE_URL + '/decompose', { method: 'POST', body: file });
+      const j = await resp.json();
+      if (j.error) throw new Error(j.error);
+      return j;
+    } catch (e) {
+      console.warn('[router] decompose unavailable:', e.message);
+      return null;
+    }
   }
 
   /* Character / skeletal motion: POST the clip to the MediaPipe pose service,

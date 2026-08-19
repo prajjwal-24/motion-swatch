@@ -27,3 +27,6 @@ tests/node_modules
 
 # MediaPipe pose venv (created by service/run-pose.sh)
 mpvenv/
+
+# VLM Router venv (created by service/run-router.sh)
+routervenv/

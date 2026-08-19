@@ -81,6 +81,35 @@ Then open `http://localhost:8000/duck-walk.html` (standalone duck demo) or use t
 clip** → it animates. `assets/motion/walk-pose.json` ships a pre-captured walk so the
 duck demo runs even without a fresh upload.
 
+### 4. (Optional) Start the VLM Router — *motion decomposition* (Step 1)
+
+The router looks at a clip with **Claude vision** and returns every distinct motion
+in it (class + bounding box + confidence) — replacing filename/layer-name guessing
+with real perception. See `docs/BUILD_PLAN.md` Step 1.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...     # required
+./service/run-router.sh                 # first run creates ./routervenv, serves :8771
+```
+
+Verify it end-to-end from the CLI (no server needed):
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... routervenv/bin/python service/decompose_cli.py assets/videos/flag.mp4
+```
+
+You get **Contract-A JSON**:
+
+```json
+{ "version": 1, "static": false, "motions": [
+  { "id": "m1", "label": "waving flag", "class": "cloth",
+    "bbox": [0.42, 0.10, 0.35, 0.30], "confidence": 0.94,
+    "backend": "flow_raft", "applicator": "wave", "notes": "flutters left" } ] }
+```
+
+The six motion classes and their routing live in `service/contracts.py`. The app
+calls it via `MotionCapture.decomposeMotion(file)` (in `js/capture.js`).
+
 ---
 
 ## How to use it (demo walkthrough)
