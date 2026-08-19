@@ -24,3 +24,6 @@ demo-export.svg
 # Stray symlinks to sibling/scratch dirs
 comic
 tests/node_modules
+
+# MediaPipe pose venv (created by service/run-pose.sh)
+mpvenv/

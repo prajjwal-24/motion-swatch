@@ -1,0 +1,5 @@
+# Character-motion (pose) service — MediaPipe pose extraction.
+# IMPORTANT: MediaPipe needs Python <= 3.12 (no wheel for 3.13). Create a
+# dedicated venv with python3.9/3.10/3.11/3.12, NOT the main service/venv (3.13).
+mediapipe==0.10.14
+opencv-python

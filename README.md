@@ -56,6 +56,31 @@ is down, capture still works using the in-browser analyzer.
 `torchvision`, `numpy`, `opencv-python-headless`, `fastapi`, `uvicorn`. Runs on
 Apple-silicon MPS, CUDA, or CPU.
 
+### 3. (Optional) Start the character-motion (pose) service
+
+This powers the **Character** tab and the `duck-walk.html` demo. It extracts a real
+walk/dance from a video with **MediaPipe Pose** (no hardcoding) and retargets it onto
+a rigged character.
+
+```bash
+./service/run-pose.sh   # first run creates ./mpvenv and installs MediaPipe, then serves :8770
+```
+
+⚠️ **MediaPipe has no wheel for Python 3.13** — it needs Python **3.9–3.12**. The
+script auto-picks a compatible interpreter and builds a *separate* venv (`./mpvenv`),
+so it never clashes with the RAFT service's 3.13 venv. Manual equivalent:
+
+```bash
+python3.12 -m venv mpvenv
+mpvenv/bin/pip install -r service/requirements-pose.txt   # mediapipe==0.10.14, opencv-python
+mpvenv/bin/python service/pose_server.py                  # POST /extract on :8770
+```
+
+Then open `http://localhost:8000/duck-walk.html` (standalone duck demo) or use the
+**Character** tab in the main app: pick the character → **upload a walking/dancing
+clip** → it animates. `assets/motion/walk-pose.json` ships a pre-captured walk so the
+duck demo runs even without a fresh upload.
+
 ---
 
 ## How to use it (demo walkthrough)
