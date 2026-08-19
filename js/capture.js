@@ -12,6 +12,7 @@
 const SERVICE_URL = 'http://127.0.0.1:8765';
 const POSE_SERVICE_URL = 'http://127.0.0.1:8770';   // MediaPipe character-pose service
 const ROUTER_SERVICE_URL = 'http://127.0.0.1:8771'; // VLM Router (motion decomposition)
+const PREPROCESS_SERVICE_URL = 'http://127.0.0.1:8772'; // Step 2: mask + camera motion
 
 class MotionCapture {
   constructor() {
@@ -44,6 +45,28 @@ class MotionCapture {
       return j;
     } catch (e) {
       console.warn('[router] decompose unavailable:', e.message);
+      return null;
+    }
+  }
+
+  /* Preprocess (Step 2): given a clip + one Contract-A motion (with a bbox), get a
+     clean object mask + camera motion so downstream extraction runs only inside the
+     masked object. `motion` is a Contract-A entry { id, class, bbox:[x,y,w,h] }.
+     Returns a region_preprocess contract, or null if the service isn't running
+     (caller then falls back to the raw router bbox as a rectangular mask). */
+  async preprocessRegion(file, motion) {
+    const b = (motion && motion.bbox) || [0, 0, 1, 1];
+    const qs = `motion_id=${encodeURIComponent(motion && motion.id || '')}` +
+               `&class=${encodeURIComponent(motion && motion.class || '')}` +
+               `&bbox=${b.map(v => (+v).toFixed(4)).join(',')}`;
+    try {
+      const resp = await fetch(`${PREPROCESS_SERVICE_URL}/preprocess?${qs}`,
+                               { method: 'POST', body: file });
+      const j = await resp.json();
+      if (j.error) throw new Error(j.error);
+      return j;
+    } catch (e) {
+      console.warn('[preprocess] region preprocess unavailable:', e.message);
       return null;
     }
   }

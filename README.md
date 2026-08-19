@@ -119,6 +119,29 @@ You get **Contract-A JSON**:
 The six motion classes and their routing live in `service/contracts.py`. The app
 calls it via `MotionCapture.decomposeMotion(file)` (in `js/capture.js`).
 
+### 5. (Optional) Start the preprocess service — *mask + camera motion* (Step 2)
+
+Turns a router bbox into a clean object **mask** (so extraction runs only inside the
+moving object) and estimates **camera motion** (so it can be subtracted — fixing the
+"scenery scrolls with the camera" case). Pure OpenCV, **no downloads, no API key** —
+reuses `./routervenv`. See `docs/BUILD_PLAN.md` Step 2.
+
+```bash
+./service/run-preprocess.sh             # serves :8772
+```
+
+Verify from the CLI — writes a mask overlay you can eyeball (the Step-2 done-when):
+
+```bash
+routervenv/bin/python service/preprocess_cli.py assets/videos/flag.mp4 0.35,0.1,0.62,0.78 cloth
+# -> /tmp/ms-flag-overlay.png : mask (red) hugs the flag, blue sky excluded; static camera
+```
+
+Returns a `region_preprocess` contract: `mask` (RLE), `camera` (`is_static`, per-frame
+transforms, `residual_px`), optional `depth`. **SAM 2** (cleaner masks) and **Depth
+Anything V2** are gated upgrades behind checkpoints; the download-free default is
+OpenCV Farneback motion-gating. The app calls it via `MotionCapture.preprocessRegion(file, motion)`.
+
 ---
 
 ## How to use it (demo walkthrough)
