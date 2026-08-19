@@ -88,14 +88,23 @@ in it (class + bounding box + confidence) — replacing filename/layer-name gues
 with real perception. See `docs/BUILD_PLAN.md` Step 1.
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...     # required
 ./service/run-router.sh                 # first run creates ./routervenv, serves :8771
 ```
+
+**Credentials (TODO — not wired yet).** By default the router calls Claude via
+**Amazon Bedrock** (`CLAUDE_CODE_USE_BEDROCK=1`, model `global.anthropic.claude-opus-4-8`,
+region from `AWS_REGION`), reusing the standard AWS credential chain — no API key
+needed. Everything works up to the auth boundary; `/decompose` currently returns 500
+because the machine's default AWS profile token is expired. To finish later, pick one:
+
+- refresh your default AWS creds so a valid Bedrock token resolves, **or**
+- `export AWS_PROFILE=<profile with Bedrock access>` before starting the router, **or**
+- `export ROUTER_USE_BEDROCK=0 ANTHROPIC_API_KEY=sk-ant-...` to use the direct API.
 
 Verify it end-to-end from the CLI (no server needed):
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... routervenv/bin/python service/decompose_cli.py assets/videos/flag.mp4
+routervenv/bin/python service/decompose_cli.py assets/videos/flag.mp4
 ```
 
 You get **Contract-A JSON**:
