@@ -13,8 +13,12 @@ How it works: sample N evenly-spaced frames, downscale, and hand them to Claude
 forced to call one tool (report_motions) so the output is strict JSON, which we then
 validate/normalize through contracts.normalize_decomposition.
 
-Run with the router venv (see service/run-router.sh):
-  ANTHROPIC_API_KEY=sk-... routervenv/bin/python service/vlm_router.py    # :8771
+Two ways to reach Claude (auto-detected):
+  * Amazon Bedrock (default when CLAUDE_CODE_USE_BEDROCK=1 or ROUTER_USE_BEDROCK=1) —
+    uses the standard AWS credential chain, no API key needed:
+      routervenv/bin/python service/vlm_router.py    # :8771
+  * Direct Anthropic API:
+      ANTHROPIC_API_KEY=sk-... ROUTER_USE_BEDROCK=0 routervenv/bin/python service/vlm_router.py
 """
 import os, sys, json, base64, tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -26,10 +30,39 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import contracts
 
 PORT = int(os.environ.get("ROUTER_PORT", "8771"))
-MODEL = os.environ.get("ROUTER_MODEL", "claude-opus-4-8")
 N_FRAMES = int(os.environ.get("ROUTER_FRAMES", "8"))
 MAX_W = 512                       # downscale width sent to the VLM (cost/latency)
 CONF_MIN = float(os.environ.get("ROUTER_CONF_MIN", "0.35"))  # drop hallucinated motions
+
+# ── Backend selection: Bedrock (default in this env) vs direct Anthropic API ──
+def _use_bedrock():
+    v = os.environ.get("ROUTER_USE_BEDROCK")
+    if v is not None:
+        return v not in ("0", "false", "no", "")
+    return os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1"   # inherit the CC setting
+
+USE_BEDROCK = _use_bedrock()
+AWS_REGION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-west-2"
+# Bedrock model ids are region-scoped inference profiles; the direct API uses the plain id.
+MODEL = os.environ.get("ROUTER_MODEL") or (
+    "global.anthropic.claude-opus-4-8" if USE_BEDROCK else "claude-opus-4-8")
+
+
+def _client():
+    if USE_BEDROCK:
+        return anthropic.AnthropicBedrock(aws_region=AWS_REGION)   # standard AWS cred chain
+    return anthropic.Anthropic()                                  # reads ANTHROPIC_API_KEY
+
+
+def _auth_ready():
+    """True if the selected backend has usable credentials configured."""
+    if USE_BEDROCK:
+        try:
+            import botocore.session
+            return botocore.session.get_session().get_credentials() is not None
+        except Exception:
+            return False
+    return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 TOOL = {
     "name": "report_motions",
@@ -131,7 +164,7 @@ def decompose(path):
     if not jpegs:
         return contracts.empty_decomposition(clip), ["no frames could be read from the clip"]
 
-    client = anthropic.Anthropic()   # reads ANTHROPIC_API_KEY
+    client = _client()
     content = [{"type": "text", "text": PROMPT}]
     for i, b64 in enumerate(jpegs):
         content.append({"type": "text", "text": f"Frame {i + 1}/{len(jpegs)}:"})
@@ -177,14 +210,17 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self._json(200, {"ok": True, "service": "vlm_router", "model": MODEL,
+                         "backend": "bedrock" if USE_BEDROCK else "anthropic",
+                         "region": AWS_REGION if USE_BEDROCK else None,
                          "classes": list(contracts.MOTION_CLASSES.keys()),
-                         "key": bool(os.environ.get("ANTHROPIC_API_KEY"))})
+                         "auth": _auth_ready()})
 
     def do_POST(self):
         if self.path != "/decompose":
             self._json(404, {"error": "POST /decompose"}); return
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            self._json(500, {"error": "ANTHROPIC_API_KEY not set on the router service"}); return
+        if not _auth_ready():
+            self._json(500, {"error": ("no AWS credentials for Bedrock" if USE_BEDROCK
+                                       else "ANTHROPIC_API_KEY not set on the router service")}); return
         n = int(self.headers.get("Content-Length", "0"))
         data = self.rfile.read(n)
         tf = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
@@ -212,7 +248,9 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print(f"vlm_router on http://127.0.0.1:{PORT}  (POST /decompose with video bytes)", file=sys.stderr)
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("  WARNING: ANTHROPIC_API_KEY not set — /decompose will 500 until you export it.",
+    print(f"  backend={'bedrock' if USE_BEDROCK else 'anthropic'} model={MODEL}"
+          + (f" region={AWS_REGION}" if USE_BEDROCK else ""), file=sys.stderr)
+    if not _auth_ready():
+        print("  WARNING: no credentials for the selected backend — /decompose will 500.",
               file=sys.stderr)
     HTTPServer(("127.0.0.1", PORT), H).serve_forever()
