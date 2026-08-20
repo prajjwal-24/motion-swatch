@@ -90,21 +90,40 @@ class MotionCapture {
     }
   }
 
-  async captureFromFile(file) {
-    // ---- preferred: deep-flow analysis service ----
+  /* Ask the service which extractor to use for a VLM-detected motion class.
+     Returns {engine, kind, available, reason} or null if the service is down. */
+  async route(cls, attrs = {}) {
+    try {
+      const p = new URLSearchParams({ cls });
+      if (attrs.subject_type) p.set('subject_type', attrs.subject_type);
+      if (attrs.count) p.set('count', attrs.count);
+      const r = await fetch(SERVICE_URL + '/route?' + p.toString());
+      return await r.json();
+    } catch { return null; }
+  }
+
+  async captureFromFile(file, opts = {}) {
+    // opts.engine (FLOW) / opts.tracker (TRAJECTORY) / opts.preproc select a pluggable
+    // backend; omitted -> the raft_small default (byte-identical to before).
     const svc = await this.serviceAvailable();
     if (svc) {
       try {
-        if (this.onProgress) this.onProgress(-1, `Analyzing with ${svc.engine}…`);
+        if (this.onProgress) this.onProgress(-1, `Analyzing with ${opts.engine || opts.tracker || svc.engine}…`);
         const form = new FormData();
         form.append('file', file, file.name);
-        const resp = await fetch(SERVICE_URL + '/analyze', { method: 'POST', body: form });
+        const qs = [];
+        if (opts.engine) qs.push('engine=' + encodeURIComponent(opts.engine));
+        if (opts.tracker) qs.push('tracker=' + encodeURIComponent(opts.tracker));
+        if (opts.preproc) qs.push('preproc=' + encodeURIComponent(opts.preproc));
+        const url = SERVICE_URL + '/analyze' + (qs.length ? '?' + qs.join('&') : '');
+        const resp = await fetch(url, { method: 'POST', body: form });
         const j = await resp.json();
         if (j.ok) {
+          const via = j.engine + (j.tracker && j.tracker !== 'raft-grid' ? ' + ' + j.tracker : '');
           const motion = {
             id: 'uploaded-' + Date.now(),
             name: file.name.replace(/\.[^.]+$/, ''),
-            desc: `Captured via ${j.engine} (${j.frames_analyzed} frames)`,
+            desc: `Captured via ${via} (${j.frames_analyzed} frames)`,
             color: '#ff8a4c',
             params: j.params,
             fromUpload: true,

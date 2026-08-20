@@ -677,12 +677,27 @@ $('motion-input').onchange = async (e) => {
     return;
   }
 
-  $('upload-status').textContent = 'Extracting texture motion with RAFT (optical flow)…';
+  // AUTO-ROUTE: ask the service which extractor best fits the VLM-detected class
+  // (cloth->SEA-RAFT, flock->CoTracker3, …). Falls back to raft_small if router is down.
+  let routeOpts = {};
+  if (routed) {
+    const rt = await capture.route(routed.class, { subject_type: routed.subject_type, count: routed.count });
+    if (rt && rt.engine && rt.available) {
+      if (rt.kind === 'flow' && rt.engine !== 'raft_small') routeOpts.engine = rt.engine;
+      else if (rt.kind === 'trajectory') routeOpts.tracker = rt.engine;
+      // object_path / skeleton engines aren't applied by the texture path yet -> default raft
+      const via = routeOpts.engine || routeOpts.tracker || 'raft_small';
+      $('upload-status').textContent = `VLM: ${routed.class} → routing to ${via}…`;
+    }
+  }
+  if (!routeOpts.engine && !routeOpts.tracker) {
+    $('upload-status').textContent = 'Extracting texture motion with RAFT (optical flow)…';
+  }
   capture.onProgress = (p, msg) => {
-    $('upload-status').textContent = msg || `RAFT analyzing… ${Math.round(p * 100)}%`;
+    $('upload-status').textContent = msg || `Analyzing… ${Math.round(p * 100)}%`;
   };
   try {
-    const motion = await capture.captureFromFile(file);
+    const motion = await capture.captureFromFile(file, routeOpts);
     if (motion) {
       // MULTI-MOTION BRANCH: if the service segmented ≥2 distinct motions,
       // show the picker so the user names and chooses which to save. Each

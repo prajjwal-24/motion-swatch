@@ -866,6 +866,23 @@ def engines():
     return {"engines": extractors.available_engines(), "device": DEVICE}
 
 
+@app.get("/route")
+def route(cls: str, subject_type: str = None, count: str = None, has_text_prompt: bool = False):
+    """Best AVAILABLE extractor for a motion class + sub-attributes (resolve_best).
+    The app calls this after the VLM classifies a clip, then invokes /analyze?engine=/tracker=
+    (FLOW/TRAJECTORY) accordingly. Single source of truth for routing + live availability."""
+    e, reason = extractors.resolve_best(
+        cls, {"subject_type": subject_type, "count": count, "has_text_prompt": has_text_prompt})
+    ok = False
+    if e:
+        try:
+            ok = bool(e.probe()[0])
+        except Exception:
+            ok = False
+    return {"engine": e.name if e else None, "kind": e.kind if e else None,
+            "available": ok, "reason": reason}
+
+
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...),
                   engine: str = None, tracker: str = None, preproc: str = None):
