@@ -225,3 +225,96 @@ def _as_float(v, default):
         return float(v)
     except (TypeError, ValueError):
         return default
+
+
+# ── Contract B: skeleton swatch (Step 3 — articulated bodies) ───────────────
+# One shape for pose / hands / face skeletons. The pose form is a strict SUPERSET
+# of today's :8770 /extract response (it adds schema_version/kind/subject/edges/
+# viewpoint/confidence but keeps joints/fps/frames/detected/total byte-identical), so
+# the existing character rig keeps working. Frame payloads differ per subject:
+#   pose : [ [x,y,c] x 13 ]            (c = visibility)
+#   hands: [ {label,score,pts:[[x,y,z] x 21]} ]  (0..2 hands; NO per-point visibility)
+#   face : [ [x,y,z] x 468 ]          (NO per-point visibility)
+SUBJECTS = ("pose", "hands", "face")
+VIEWPOINTS = ("front", "side", "unknown")
+
+POSE_JOINTS = ["nose", "l_sho", "r_sho", "l_elb", "r_elb", "l_wri", "r_wri",
+               "l_hip", "r_hip", "l_knee", "r_knee", "l_ank", "r_ank"]
+POSE_EDGES = [[0, 1], [0, 2], [1, 2], [1, 3], [3, 5], [2, 4], [4, 6],
+              [1, 7], [2, 8], [7, 8], [7, 9], [9, 11], [8, 10], [10, 12]]
+
+HAND_JOINTS = ["wrist",
+               "thumb_cmc", "thumb_mcp", "thumb_ip", "thumb_tip",
+               "index_mcp", "index_pip", "index_dip", "index_tip",
+               "middle_mcp", "middle_pip", "middle_dip", "middle_tip",
+               "ring_mcp", "ring_pip", "ring_dip", "ring_tip",
+               "pinky_mcp", "pinky_pip", "pinky_dip", "pinky_tip"]
+HAND_EDGES = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8],
+              [5, 9], [9, 10], [10, 11], [11, 12], [9, 13], [13, 14], [14, 15], [15, 16],
+              [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]]
+
+SUBJECT_JOINTS = {"pose": POSE_JOINTS, "hands": HAND_JOINTS, "face": []}
+SUBJECT_EDGES = {"pose": POSE_EDGES, "hands": HAND_EDGES, "face": []}
+
+
+# What the single `confidence` scalar MEANS per subject — it is NOT comparable across
+# subjects, so we label it rather than pretend one 0..1 quality applies to all.
+CONFIDENCE_OF = {"pose": "mean_visibility", "hands": "handedness_score",
+                 "face": "detection_ratio"}
+
+
+def empty_skeleton_swatch(subject, engine=""):
+    subject = subject if subject in SUBJECTS else "pose"
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "skeleton",
+        "subject": subject,
+        "engine": engine,
+        "joints": list(SUBJECT_JOINTS[subject]),
+        "edges": [list(e) for e in SUBJECT_EDGES[subject]],
+        "fps": 15,
+        "viewpoint": "unknown",
+        "detected": 0,          # frames with a REAL detection (never counts interpolated)
+        "total": 0,
+        "interpolated": 0,      # frames synthesised by short-gap interpolation
+        "confidence": 0.0,
+        "confidence_of": CONFIDENCE_OF[subject],   # meaning of `confidence` for this subject
+        "flags": [],            # per-frame provenance: 'ok' | 'interp' | 'gap'
+        "frames": [],
+    }
+
+
+def normalize_skeleton_swatch(raw):
+    """Validate/clamp a raw skeleton swatch into the frozen shape. Frame payloads
+    are kept as-is (numeric); only scalars/enums are validated. Returns (contract, warnings)."""
+    warnings = []
+    if not isinstance(raw, dict):
+        return empty_skeleton_swatch("pose"), ["raw skeleton swatch was not an object"]
+    subject = str(raw.get("subject", "pose"))
+    if subject not in SUBJECTS:
+        warnings.append(f"unknown subject {subject!r}; defaulted to pose")
+        subject = "pose"
+    out = empty_skeleton_swatch(subject, str(raw.get("engine", "")))
+    if isinstance(raw.get("joints"), list) and raw["joints"]:
+        out["joints"] = [str(j) for j in raw["joints"]]
+    if isinstance(raw.get("edges"), list):
+        out["edges"] = raw["edges"]
+    vp = str(raw.get("viewpoint", "unknown"))
+    if vp not in VIEWPOINTS:
+        warnings.append(f"unknown viewpoint {vp!r}; defaulted to unknown")
+        vp = "unknown"
+    out["viewpoint"] = vp
+    out["fps"] = int(_as_float(raw.get("fps"), 15)) or 15
+    out["confidence"] = round(_clamp01(_as_float(raw.get("confidence"), 0.0)), 3)
+    if raw.get("confidence_of") in CONFIDENCE_OF.values():
+        out["confidence_of"] = raw["confidence_of"]
+    frames = raw.get("frames") if isinstance(raw.get("frames"), list) else []
+    out["frames"] = frames
+    if isinstance(raw.get("flags"), list):
+        out["flags"] = raw["flags"]
+    out["total"] = int(_as_float(raw.get("total"), len(frames)))
+    out["detected"] = int(_as_float(raw.get("detected"),
+                                    sum(1 for f in frames if f)))
+    out["interpolated"] = int(_as_float(raw.get("interpolated"),
+                                         sum(1 for fl in out["flags"] if fl == "interp")))
+    return out, warnings

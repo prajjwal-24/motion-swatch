@@ -74,11 +74,20 @@ class MotionCapture {
   /* Character / skeletal motion: POST the clip to the MediaPipe pose service,
      which returns a captured pose sequence (joints + per-frame keypoints).
      Returns {joints, fps, frames, detected, total} or null if unavailable. */
-  async captureCharacter(file) {
-    const resp = await fetch(POSE_SERVICE_URL + '/extract', { method: 'POST', body: file });
-    const j = await resp.json();
-    if (j.error) throw new Error(j.error);
-    return j;
+  async captureCharacter(file, kind = 'pose') {
+    // kind: 'pose' (default, byte-compatible response the rig consumes) | 'hands' | 'face'.
+    // hands/face return a Contract-B skeleton swatch (subject!=='pose') and must NOT be
+    // routed to the body rig (_applyCharacter) — see js/animate.js.
+    const qs = kind && kind !== 'pose' ? `?kind=${encodeURIComponent(kind)}` : '';
+    try {
+      const resp = await fetch(POSE_SERVICE_URL + '/extract' + qs, { method: 'POST', body: file });
+      const j = await resp.json();
+      if (j.error) throw new Error(j.error);
+      return j;
+    } catch (e) {
+      console.warn('[pose] captureCharacter unavailable:', e.message);
+      return null;   // matches decomposeMotion/preprocessRegion; caller guards on !pose
+    }
   }
 
   async captureFromFile(file) {

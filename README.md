@@ -81,6 +81,22 @@ Then open `http://localhost:8000/duck-walk.html` (standalone duck demo) or use t
 clip** → it animates. `assets/motion/walk-pose.json` ships a pre-captured walk so the
 duck demo runs even without a fresh upload.
 
+**Backends A — bodies + hands + face (Step 3).** The same service also extracts hands
+and faces (same MediaPipe wheel, no extra install), via a `kind` param:
+
+```bash
+curl -X POST --data-binary @clip.mp4 "http://127.0.0.1:8770/extract"              # pose (default, byte-frozen)
+curl -X POST --data-binary @clip.mp4 "http://127.0.0.1:8770/extract?kind=pose&fmt=b"  # + viewpoint, gap-filled
+curl -X POST --data-binary @hand.mp4 "http://127.0.0.1:8770/extract?kind=hands"   # 21 landmarks x up to 2 hands
+curl -X POST --data-binary @face.mp4 "http://127.0.0.1:8770/extract?kind=face"    # 468 face landmarks
+```
+
+The **default `/extract` response is unchanged** (the character rig depends on it).
+`kind=hands|face` return a Contract-B *skeleton swatch* (`service/contracts.py`); they're
+backend-ready but **not yet wired into the character UI** (no hands/face applicator
+exists — a hands swatch would not fit the body rig). Pose `fmt=b` adds a front/side
+**viewpoint** estimate and short-gap interpolation over dropped frames.
+
 ### 4. (Optional) Start the VLM Router — *motion decomposition* (Step 1)
 
 The router looks at a clip with **Claude vision** and returns every distinct motion
