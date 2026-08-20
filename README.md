@@ -226,8 +226,8 @@ motion-swatch-poc/
 │   ├── run.sh            # venv bootstrap + uvicorn launch (port 8765)
 │   └── requirements.txt
 ├── assets/
-│   ├── scenes/           # ready-made scene SVGs
-│   └── targets/          # single-object target artworks
+│   ├── scenes/           # ready-made + rigged scene SVGs (motion-lab, character-duck/bear…)
+│   └── videos/           # sample source clips for extraction
 └── tests/                # puppeteer-core headless-Chrome checks
 ```
 
