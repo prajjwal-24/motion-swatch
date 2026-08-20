@@ -29,6 +29,26 @@ import anthropic
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import contracts
 
+
+def _load_dotenv():
+    """Load repo-root .env (gitignored) so secrets like ANTHROPIC_API_KEY or
+    AWS_BEARER_TOKEN_BEDROCK can live in a file instead of the shell. Never overrides
+    an already-set env var. stdlib-only (no python-dotenv dependency)."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    except FileNotFoundError:
+        pass
+
+
+_load_dotenv()
+
 PORT = int(os.environ.get("ROUTER_PORT", "8771"))
 N_FRAMES = int(os.environ.get("ROUTER_FRAMES", "8"))
 MAX_W = 512                       # downscale width sent to the VLM (cost/latency)
@@ -45,6 +65,8 @@ def _use_bedrock():
     v = os.environ.get("ROUTER_USE_BEDROCK")
     if v is not None:
         return v not in ("0", "false", "no", "")
+    if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
+        return True                                         # Bedrock API key -> Bedrock
     if _real_key():
         return False                                        # explicit key -> direct API
     return os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1"  # else inherit the CC setting
@@ -65,6 +87,8 @@ def _client():
 def _auth_ready():
     """True if the selected backend has usable credentials configured."""
     if USE_BEDROCK:
+        if os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
+            return True                 # Bedrock API key (bearer token)
         try:
             import botocore.session
             return botocore.session.get_session().get_credentials() is not None
