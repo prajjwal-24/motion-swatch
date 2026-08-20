@@ -87,6 +87,15 @@ tracks; **keep bulk + residual** (don't delete travel); optional Eulerian magnif
 
 **Done-when:** applying a captured flow makes the object travel a visibly larger, natural distance without tearing.
 
+**Status (shipped):** the pluggable **extractor registry** (`service/extractors.py` + `/engines`
++ `?engine=/?tracker=/?preproc=`) is built and verified — `raft_small`/`raft_large`,
+**CoTracker3** (long-range tracks) and **Eulerian magnification** all run locally; **SEA-RAFT**
+is honestly gated (needs a clone + weights, falls back to `raft_small`). The default response
+is byte-identical. **Not shipped:** the "travel dial" — folding bulk back into the residual does
+NOT increase travel, because the amplitude persistence-gate cancels coherent drift and steady
+travel already lives in `driftX/driftY`. Making objects visibly travel farther is a
+**renderer-side** change (the bounded `DRIFT_PX` sawtooth in `js/animate.js`), deferred.
+
 ---
 
 ## Step 5 — Backend C: discrete objects on a path (new)

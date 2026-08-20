@@ -49,6 +49,8 @@ MAX_SECONDS = float(os.environ.get("MS_SECONDS", "8"))    # max clip length anal
 TARGET_FPS = float(os.environ.get("MS_FPS", "20"))        # flow-pair sample rate
 GRID = 12                     # trajectories returned on a GRID x GRID grid
 
+import extractors                # pluggable extractor registry (Step 4)
+
 app = FastAPI(title="motion-swatch-service")
 app.add_middleware(
     CORSMiddleware,
@@ -858,8 +860,17 @@ def health():
     return {"ok": True, "engine": f"{ENGINE} (torchvision pretrained)", "device": DEVICE}
 
 
+@app.get("/engines")
+def engines():
+    """Which extractor backends are installed on this machine, and why gated ones aren't."""
+    return {"engines": extractors.available_engines(), "device": DEVICE}
+
+
 @app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
+async def analyze(file: UploadFile = File(...),
+                  engine: str = None, tracker: str = None, preproc: str = None):
+    # Optional query params select pluggable backends (Step 4). With NO params the
+    # response is byte-identical to the pre-Step-4 default (raft_small + RAFT grid).
     suffix = Path(file.filename or "clip.mp4").suffix or ".mp4"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
         tmp.write(await file.read())
@@ -869,25 +880,62 @@ async def analyze(file: UploadFile = File(...)):
     if frames is None or len(frames) < 13:
         return {"ok": False, "error": "could not decode enough frames (need ≥ 13)"}
 
-    flows = raft_flow_series(frames)
+    notes = []
+
+    # (0) optional preproc (e.g. EVM motion magnification) — default: frames unchanged.
+    # A failed magnification surfaces a note (never a silent no-op) per the honesty rule.
+    if preproc:
+        pe, pwhy = extractors.resolve(preproc, extractors.PREPROC)
+        if pwhy:
+            notes.append(pwhy)
+        if pe:
+            try:
+                frames = pe.load()(frames, fps)
+            except Exception as ex:
+                notes.append(f"{preproc} preproc failed, used raw frames: {ex}")
+
+    # (1) FLOW engine — default (no param, or resolves to raft_small) uses the server's
+    #     own raft_flow_series so the default path stays byte-identical.
+    fe, fwhy = extractors.resolve(engine, extractors.FLOW)
+    if fwhy:
+        notes.append(fwhy)
+    if engine and fe and fe.name != "raft_small":
+        flows = fe.load()(frames)
+        used_engine = fe.name
+    else:
+        flows = raft_flow_series(frames)
+        used_engine = ENGINE
+
     params = distill(flows, fps)
     if params is None:
         return {"ok": False, "error": "not enough motion data"}
 
+    # (2) TRAJECTORY engine — default uses the RAFT-integrated grid
+    if tracker:
+        te, twhy = extractors.resolve(tracker, extractors.TRAJECTORY)
+        if twhy:
+            notes.append(twhy)
+        trajectories = te.load()(frames) if (te and te.kind == extractors.TRAJECTORY and not twhy) \
+            else grid_trajectories(flows)
+        used_tracker = te.name if (te and not twhy) else "raft-grid"
+    else:
+        trajectories = grid_trajectories(flows)
+        used_tracker = "raft-grid"
+
     regions = segment_regions(flows, fps, filename=file.filename or "")
 
-    return {
+    resp = {
         "ok": True,
-        "engine": f"{ENGINE}@{DEVICE}",
+        "engine": f"{used_engine}@{DEVICE}",
         "fps": round(fps, 2),
         "frames_analyzed": int(len(frames)),
-        # whole-frame swatch — kept for backward compatibility, single-motion
-        # clips, and the fallback path when picker is skipped
         "params": params,
-        "trajectories": grid_trajectories(flows),
-        # per-motion segmentation — empty if RAFT can't find a moving cell,
-        # single-entry if all motion is one coherent region, multi-entry if
-        # the clip has several distinct motions. Frontend picks the picker
-        # UI when len(regions) >= 2.
+        "trajectories": trajectories,
         "regions": regions,
     }
+    # additive fields ONLY when a param was used — keeps the no-query response byte-identical
+    if engine or tracker or preproc:
+        resp["tracker"] = used_tracker
+        if notes:
+            resp["notes"] = notes
+    return resp

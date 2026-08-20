@@ -56,6 +56,27 @@ is down, capture still works using the in-browser analyzer.
 `torchvision`, `numpy`, `opencv-python-headless`, `fastapi`, `uvicorn`. Runs on
 Apple-silicon MPS, CUDA, or CPU.
 
+**Pluggable extractor registry (Step 4).** The service is no longer hardwired to one
+model — `service/extractors.py` registers multiple backends and `/analyze` selects one:
+
+```bash
+curl 127.0.0.1:8765/engines                                   # which backends are installed
+curl -X POST -F file=@clip.mp4 127.0.0.1:8765/analyze         # default: raft_small (byte-identical)
+curl -X POST -F file=@clip.mp4 "127.0.0.1:8765/analyze?engine=raft_large"    # sharper flow
+curl -X POST -F file=@clip.mp4 "127.0.0.1:8765/analyze?tracker=cotracker3"   # long-range point tracks
+curl -X POST -F file=@clip.mp4 "127.0.0.1:8765/analyze?preproc=evm"          # magnify subtle motion
+```
+
+| Engine | Kind | Status |
+|---|---|---|
+| `raft_small` (default) / `raft_large` | dense flow | ✅ built-in (torchvision, cached) |
+| `cotracker3` | long-range trajectories | ✅ works when weights are cached (~97MB via torch.hub) |
+| `evm` (Eulerian magnification) | pre-process | ✅ pure numpy+cv2, no download |
+| `searaft` | dense flow | ⚠️ **gated** — needs `git clone princeton-vl/SEA-RAFT` into `service/SEA-RAFT` + `pip install einops huggingface_hub safetensors`; **falls back to raft_small with a note** until then |
+
+The **no-query `/analyze` and `/health` responses are byte-identical** to before, so the app
+is unaffected. An unavailable/unknown engine transparently **falls back** to `raft_small`.
+
 ### 3. (Optional) Start the character-motion (pose) service
 
 This powers the **Character** tab and the `duck-walk.html` demo. It extracts a real
