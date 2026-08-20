@@ -39,3 +39,6 @@ service/SEA-RAFT/
 
 # Auto-downloaded model weights (YOLO etc.)
 *.pt
+
+# Huge demo recording (keep local, never commit)
+assets/videos/CompleteDemo.mp4
