@@ -583,12 +583,13 @@ $('motion-input').onchange = async (e) => {
   // The router LOOKS AT THE CLIP and picks the extractor — you don't declare the type.
   //   articulated (a body) -> MediaPipe skeleton   ·   everything else -> RAFT texture
   // If the router is down/unauthed it falls back to the manual selection heuristic.
-  let routed = null;
+  let routed = null, allMotions = [];
   try {
     $('upload-status').textContent = 'Reading the clip with the VLM router…';
     const contract = await capture.decomposeMotion(file);
     if (contract && !contract.static && contract.motions && contract.motions.length) {
-      routed = contract.motions.slice().sort((a, b) => b.confidence - a.confidence)[0];
+      allMotions = contract.motions.slice().sort((a, b) => b.confidence - a.confidence);
+      routed = allMotions[0];
     }
   } catch (_) {}
 
@@ -675,6 +676,36 @@ $('motion-input').onchange = async (e) => {
     status('Motion "Autumn Fall" captured from video — click it, then apply to the leaves.', true);
     e.target.value = '';
     return;
+  }
+
+  // MULTI-MOTION: the VLM found ≥2 distinct (non-body) motions in ONE clip → extract each
+  // into its own swatch, bbox-localized to that motion's region and routed to its own engine.
+  const textureMotions = allMotions.filter(m => m.class !== 'articulated').slice(0, 4);
+  if (textureMotions.length >= 2) {
+    const added = [];
+    for (let i = 0; i < textureMotions.length; i++) {
+      const m = textureMotions[i];
+      $('upload-status').textContent = `Multi-motion ${i + 1}/${textureMotions.length}: ${m.label} (${m.class})…`;
+      const rt = await capture.route(m.class, { subject_type: m.subject_type, count: m.count });
+      const opts = { bbox: m.bbox };
+      if (rt && rt.available) {
+        if (rt.kind === 'flow' && rt.engine !== 'raft_small') opts.engine = rt.engine;
+        else if (rt.kind === 'trajectory') opts.tracker = rt.engine;
+      }
+      const sw = await capture.captureFromFile(file, opts);
+      if (sw) { sw.name = m.label || m.class; sw.desc = `${m.class} · ${sw.desc}`; added.push(sw); }
+    }
+    if (added.length) {
+      added.forEach(sw => library.add(sw));
+      videoRec.motionId = added[0].id;
+      renderMotionList();
+      $('upload-status').textContent =
+        `Extracted ${added.length} motions: ${added.map(s => `"${s.name}"`).join(', ')} — click one, then apply to an object.`;
+      status(`Extracted ${added.length} motions from one clip — apply each to its object.`, true);
+    } else {
+      $('upload-status').textContent = 'Multi-motion extraction found nothing usable.';
+    }
+    e.target.value = ''; return;
   }
 
   // AUTO-ROUTE: ask the service which extractor best fits the VLM-detected class

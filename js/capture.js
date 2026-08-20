@@ -115,6 +115,7 @@ class MotionCapture {
         if (opts.engine) qs.push('engine=' + encodeURIComponent(opts.engine));
         if (opts.tracker) qs.push('tracker=' + encodeURIComponent(opts.tracker));
         if (opts.preproc) qs.push('preproc=' + encodeURIComponent(opts.preproc));
+        if (opts.bbox) qs.push('bbox=' + opts.bbox.map(v => (+v).toFixed(4)).join(','));
         const url = SERVICE_URL + '/analyze' + (qs.length ? '?' + qs.join('&') : '');
         const resp = await fetch(url, { method: 'POST', body: form });
         const j = await resp.json();

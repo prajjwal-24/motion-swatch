@@ -95,6 +95,32 @@ def read_frames(path: str):
     return np.stack(frames) if frames else None, eff_fps
 
 
+def _crop_frames(frames: np.ndarray, bbox_str: str):
+    """Crop [T,H,W,3] to a normalized [x,y,w,h] region and UPSCALE so both sides are
+    >=128px (RAFT needs feature maps >=16 after its /8 downsample). Localizes extraction
+    to one VLM-detected motion; the flow pattern (dir/freq) is scale-invariant so upscaling
+    a small region is fine. Returns None if the region is degenerate."""
+    try:
+        bx = [float(v) for v in bbox_str.split(",")][:4]
+    except (ValueError, AttributeError):
+        return None
+    T, H, W, _ = frames.shape
+    x0 = min(max(0, int(round(bx[0] * W))), W - 1)
+    y0 = min(max(0, int(round(bx[1] * H))), H - 1)
+    x1 = min(W, x0 + int(round(bx[2] * W)))
+    y1 = min(H, y0 + int(round(bx[3] * H)))
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+    crop = frames[:, y0:y1, x0:x1, :]
+    ch, cw = crop.shape[1], crop.shape[2]
+    MIN = 128
+    s = max(1.0, MIN / ch, MIN / cw)                       # upscale so min side >= 128
+    nh = max(MIN, int(round(ch * s)) // 8 * 8)             # snap to /8, floor 128
+    nw = max(MIN, int(round(cw * s)) // 8 * 8)
+    return np.stack([cv2.resize(crop[i], (nw, nh), interpolation=cv2.INTER_LINEAR)
+                     for i in range(T)]).astype(np.float32)
+
+
 def raft_flow_series(frames: np.ndarray) -> np.ndarray:
     """Dense flow for each consecutive pair. Returns [T-1, 2, H, W] (px/frame)."""
     t = torch.from_numpy(frames).permute(0, 3, 1, 2) * 2 - 1  # [T,3,H,W] in [-1,1]
@@ -893,7 +919,7 @@ def route(cls: str, subject_type: str = None, count: str = None, has_text_prompt
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...),
-                  engine: str = None, tracker: str = None, preproc: str = None):
+                  engine: str = None, tracker: str = None, preproc: str = None, bbox: str = None):
     # Optional query params select pluggable backends (Step 4). With NO params the
     # response is byte-identical to the pre-Step-4 default (raft_small + RAFT grid).
     suffix = Path(file.filename or "clip.mp4").suffix or ".mp4"
@@ -906,6 +932,14 @@ async def analyze(file: UploadFile = File(...),
         return {"ok": False, "error": "could not decode enough frames (need ≥ 13)"}
 
     notes = []
+
+    # crop to one detected motion's region (multi-motion extraction) — default: full frame
+    if bbox:
+        cropped = _crop_frames(frames, bbox)
+        if cropped is None or len(cropped) < 13:
+            notes.append(f"bbox {bbox} too small; used full frame")
+        else:
+            frames = cropped
 
     # (0) optional preproc (e.g. EVM motion magnification) — default: frames unchanged.
     # A failed magnification surfaces a note (never a silent no-op) per the honesty rule.
@@ -972,11 +1006,11 @@ async def analyze(file: UploadFile = File(...),
         "regions": regions,
     }
     # additive fields ONLY when a param was used — keeps the no-query response byte-identical
-    if engine or tracker or preproc:
+    if engine or tracker or preproc or bbox:
         resp["tracker"] = used_tracker
         if notes:
             resp["notes"] = notes
     _log(f"[analyze] FLOW={used_engine} TRAJ={used_tracker} preproc={preproc or '-'} "
-         f"frames={len(frames)} regions={len(regions)}"
+         f"bbox={bbox or '-'} frames={len(frames)} regions={len(regions)}"
          + (f" | NOTES: {'; '.join(notes)}" if notes else ""))
     return resp
