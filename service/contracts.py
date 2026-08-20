@@ -76,7 +76,21 @@ def empty_decomposition(clip=None):
     return {"version": SCHEMA_VERSION, "clip": clip or {}, "static": True, "motions": []}
 
 
-def normalize_decomposition(raw, clip=None):
+def _enum(v, allowed, default):
+    v = str(v).lower() if v is not None else ""
+    return v if v in allowed else default
+
+
+def _count_bucket(v):
+    """Bucket a count into 'one'|'many' — handles numerics (2, '5') and synonyms."""
+    try:
+        return "many" if float(v) > 1 else "one"
+    except (TypeError, ValueError):
+        s = str(v).lower().strip()
+        return "many" if s in ("many", "few", "several", "multiple", "group", "flock", "crowd") else "one"
+
+
+def normalize_decomposition(raw, clip=None, has_text_prompt=False):
     """Coerce a raw VLM result into a valid Contract-A object.
 
     Drops motions with an unknown class, clamps bbox/confidence to sane ranges,
@@ -116,6 +130,10 @@ def normalize_decomposition(raw, clip=None):
             "confidence": round(conf, 3),
             "backend": backend_for(cls),
             "applicator": applicator_for(cls),
+            # sub-attributes that steer extractors.resolve_best() to the right model
+            "subject_type": _enum(m.get("subject_type"), ("human", "animal", "object"), "object"),
+            "count": _count_bucket(m.get("count")),
+            "has_text_prompt": bool(has_text_prompt),
             "notes": str(m.get("notes", ""))[:240],
         })
     return {

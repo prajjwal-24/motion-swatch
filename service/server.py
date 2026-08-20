@@ -900,8 +900,13 @@ async def analyze(file: UploadFile = File(...),
     if fwhy:
         notes.append(fwhy)
     if engine and fe and fe.name != "raft_small":
-        flows = fe.load()(frames)
-        used_engine = fe.name
+        try:
+            flows = fe.load()(frames)
+            used_engine = fe.name
+        except Exception as ex:                       # any load/weights failure -> graceful fallback
+            flows = raft_flow_series(frames)
+            used_engine = ENGINE
+            notes.append(f"{fe.name} failed, used {ENGINE}: {ex}")
     else:
         flows = raft_flow_series(frames)
         used_engine = ENGINE
@@ -915,9 +920,17 @@ async def analyze(file: UploadFile = File(...),
         te, twhy = extractors.resolve(tracker, extractors.TRAJECTORY)
         if twhy:
             notes.append(twhy)
-        trajectories = te.load()(frames) if (te and te.kind == extractors.TRAJECTORY and not twhy) \
-            else grid_trajectories(flows)
-        used_tracker = te.name if (te and not twhy) else "raft-grid"
+        if te and te.kind == extractors.TRAJECTORY and not twhy:
+            try:
+                trajectories = te.load()(frames)
+                used_tracker = te.name
+            except Exception as ex:                   # graceful fallback to the RAFT grid
+                trajectories = grid_trajectories(flows)
+                used_tracker = "raft-grid"
+                notes.append(f"{te.name} failed, used raft-grid: {ex}")
+        else:
+            trajectories = grid_trajectories(flows)
+            used_tracker = "raft-grid"
     else:
         trajectories = grid_trajectories(flows)
         used_tracker = "raft-grid"

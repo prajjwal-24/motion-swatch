@@ -36,3 +36,6 @@ routervenv/
 
 # Vendored SEA-RAFT clone (opt-in engine; run service/setup-searaft.sh)
 service/SEA-RAFT/
+
+# Auto-downloaded model weights (YOLO etc.)
+*.pt

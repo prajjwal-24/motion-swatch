@@ -25,6 +25,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 FLOW, TRAJECTORY, PREPROC = "flow", "trajectory", "preproc"
+# Step 5+ kinds: skeletal bodies, single-object travel paths, and Step-2 helpers.
+SKELETON, OBJECT_PATH = "skeleton", "object_path"
+SEGMENT, DEPTH, CAMERA, TEXT2MOTION = "segment", "depth", "camera", "text2motion"
 GRID = 12
 
 
@@ -226,3 +229,189 @@ def _evm_build():
 register(Engine("evm", PREPROC, "Eulerian magnification — amplify tiny/subtle motion (rain, breathing, slow water)",
                 probe=lambda: (True, "numpy+cv2") if _has("cv2") else (False, "opencv missing"),
                 factory=_evm_build, default=True))
+
+
+# ── OBJECT_PATH: YOLO + ByteTrack (RUN-HERE-REAL — closes the rigid_path gap) ──
+def _yolo_build():
+    import os, numpy as np, torch
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    from ultralytics import YOLO
+    dev = "mps" if torch.backends.mps.is_available() else "cpu"
+    model = YOLO(os.environ.get("YOLO_WEIGHTS", "yolov8n.pt"))
+
+    def path_fn(frames):
+        """frames[T,H,W,3] in [0,1] RGB -> the longest track's centroid path
+        [[t, cx, cy, w, h, label] ...] (normalized) for a path_travel applicator."""
+        paths = {}
+        for t in range(len(frames)):
+            bgr = np.ascontiguousarray((frames[t][:, :, ::-1] * 255).astype(np.uint8))  # RGB->BGR uint8
+            r = model.track(bgr, tracker="bytetrack.yaml", persist=(t > 0), verbose=False,
+                            device=dev, conf=float(os.environ.get("YOLO_CONF", "0.25")))[0]  # t==0 resets tracker
+            b = r.boxes
+            if b is None or b.id is None:
+                continue
+            for (cx, cy, w, h), i, c in zip(b.xywhn.cpu().numpy(), b.id.cpu().numpy().astype(int),
+                                            b.cls.cpu().numpy().astype(int)):
+                paths.setdefault(int(i), []).append(
+                    [t, round(float(cx), 4), round(float(cy), 4), round(float(w), 4),
+                     round(float(h), 4), model.names[c]])
+        if not paths:
+            return []
+        return max(paths.values(), key=len)          # longest track = the traveling object
+    return path_fn
+
+
+register(Engine("yolo_bytetrack", OBJECT_PATH,
+                "YOLO + ByteTrack — detect+track one object into a travel path (boat/car/…)",
+                probe=lambda: (True, "ultralytics+torch (yolov8n.pt auto-downloads once)")
+                              if (_has("ultralytics") and _has("torch")) else (False, "pip install ultralytics"),
+                factory=_yolo_build))
+
+
+# ── SKELETON: torchvision Keypoint R-CNN (multi-person, RUN-HERE — weights ~226MB on 1st use) ──
+def _keypointrcnn_build():
+    import numpy as np, torch
+    from torchvision.models.detection import (keypointrcnn_resnet50_fpn,
+                                              KeypointRCNN_ResNet50_FPN_Weights)
+    dev = "mps" if torch.backends.mps.is_available() else "cpu"
+    model = keypointrcnn_resnet50_fpn(weights=KeypointRCNN_ResNet50_FPN_Weights.DEFAULT).eval().to(dev)
+    NAMES = ["nose", "l_sho", "r_sho", "l_elb", "r_elb", "l_wri", "r_wri",
+             "l_hip", "r_hip", "l_knee", "r_knee", "l_ank", "r_ank"]
+    COCO = {"nose": 0, "l_sho": 5, "r_sho": 6, "l_elb": 7, "r_elb": 8, "l_wri": 9, "r_wri": 10,
+            "l_hip": 11, "r_hip": 12, "l_knee": 13, "r_knee": 14, "l_ank": 15, "r_ank": 16}
+
+    def pose_fn(frames):
+        seq = []
+        with torch.no_grad():
+            for f in frames:
+                out = model([torch.from_numpy(f).permute(2, 0, 1).to(dev)])[0]  # f in [0,1]
+                if len(out["keypoints"]) == 0:
+                    seq.append(None); continue
+                kp = out["keypoints"][0].cpu().numpy()          # [17,3] (x,y,vis≈1) px
+                sc = 1.0 / (1.0 + np.exp(-out["keypoints_scores"][0].cpu().numpy()))  # real per-joint conf
+                H, W = f.shape[:2]
+                pts = {n: (kp[i][0] / W, kp[i][1] / H, float(sc[i])) for n, i in COCO.items()}
+                xs = [p[0] for p in pts.values()]; ys = [p[1] for p in pts.values()]
+                x0, y0 = min(xs), min(ys); bw = max(1e-3, max(xs) - x0); bh = max(1e-3, max(ys) - y0)
+                seq.append([[round(float((pts[n][0] - x0) / bw), 4), round(float((pts[n][1] - y0) / bh), 4),
+                             round(float(min(1.0, pts[n][2])), 3)] for n in NAMES])  # float() -> JSON-safe
+        return {"joints": NAMES, "fps": 15, "engine": "keypointrcnn",
+                "detected": sum(1 for s in seq if s), "total": len(seq), "frames": seq}
+    return pose_fn
+
+
+register(Engine("keypointrcnn", SKELETON, "torchvision Keypoint R-CNN — dominant-person 13-joint skeleton",
+                probe=lambda: (True, "torchvision (weights ~226MB download on first use if not cached)")
+                              if _has("torchvision") else (False, "torchvision missing"),
+                factory=_keypointrcnn_build, default=True))
+
+
+# ── SKELETON: MediaPipe pose/hands/face — lives on the :8770 service (Backend A) ──
+def _reachable(url, timeout=0.4):
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+POSE_URL = os.environ.get("POSE_SERVICE_URL", "http://127.0.0.1:8770")
+register(Engine("pose_mediapipe", SKELETON,
+                "MediaPipe BlazePose/Hands/Face — served by pose_server.py (:8770)",
+                probe=lambda: (True, "pose_server :8770 up") if _reachable(POSE_URL + "/")
+                              else (False, "start pose_server.py (:8770) for MediaPipe pose/hands/face"),
+                factory=lambda: (_ for _ in ()).throw(RuntimeError(
+                    "pose_mediapipe runs on the :8770 service (POST /extract), not the :8765 registry"))))
+
+
+# ── GATED research backends: registered + routed, but probe False until set up ──
+def _gate(setup, *_mods, env=None):
+    # Stub engines have no real factory yet — registered for routing awareness + setup
+    # docs, but must NEVER report available (their _stub factory only raises). Honesty rule.
+    return lambda: (False, setup)
+
+
+def _stub(setup):
+    return lambda: (_ for _ in ()).throw(RuntimeError(f"gated engine not set up: {setup}"))
+
+
+for _n, _k, _desc, _need, _setup in [
+    ("wham",         SKELETON,    "WHAM — 3D human + world-space travel",           ("wham",),        "clone yzhu.io/WHAM + weights (CUDA-leaning; heavy)"),
+    ("mmpose_animal", SKELETON,   "MMPose/DeepLabCut — animal skeletons",           ("mmpose", "mmcv"), "pip install mmpose mmcv + an animal-pose checkpoint"),
+    ("tapir",        TRAJECTORY,  "TAPIR/TAP-Net — point tracking (CoTracker alt)", ("tapnet",),      "clone google-deepmind/tapnet + weights"),
+    ("objectron",    OBJECT_PATH, "MediaPipe Objectron — 3D box (shoe/chair/cup/camera only)", ("mediapipe",), "install mediapipe (py<=3.12); only 4 categories"),
+    ("mdm",          TEXT2MOTION, "MDM/MotionGPT — text prompt -> skeleton (no video)", ("mdm",),     "clone GuyTevet/motion-diffusion-model + weights"),
+    ("droid_slam",   CAMERA,      "DROID-SLAM — camera pose (vs OpenCV homography floor)", ("droid_slam",), "clone princeton-vl/DROID-SLAM (CUDA); floor = ORB affine"),
+    ("sam2",         SEGMENT,     "SAM 2 — clean object mask (vs GrabCut floor)",   ("sam2",),        "pip install 'git+…/sam2' + checkpoint; floor = GrabCut+motion"),
+    ("depth",        DEPTH,       "Depth Anything V2 — monocular depth",            ("transformers",), "pip install transformers + depth-anything weights"),
+]:
+    register(Engine(_n, _k, _desc, probe=_gate(_setup, *_need), factory=_stub(_setup)))
+
+
+# ── Routing table: (class, subject_type, count, has_text_prompt) -> engine preference ──
+# resolve_best walks the first matching rule's list L->R and returns the first AVAILABLE
+# engine (probe passes), else the class floor. A rule matches when every key in `when`
+# equals the given attr. Rules are most-specific-first.
+ROUTING_TABLE = {
+    "articulated": [
+        ({"subject_type": "human", "has_text_prompt": True}, ["mdm", "wham", "pose_mediapipe", "keypointrcnn"]),
+        ({"subject_type": "human", "count": "many"},         ["keypointrcnn", "pose_mediapipe"]),
+        ({"subject_type": "human"},                          ["wham", "pose_mediapipe", "keypointrcnn"]),
+        ({"subject_type": "animal", "has_text_prompt": True},["mdm", "mmpose_animal", "pose_mediapipe", "keypointrcnn"]),
+        ({"subject_type": "animal"},                         ["mmpose_animal", "pose_mediapipe", "keypointrcnn"]),
+        ({},                                                 ["pose_mediapipe", "keypointrcnn"]),
+    ],
+    "cloth":  [({}, ["searaft", "raft_large", "raft_small"])],
+    "fluid":  [({}, ["searaft", "raft_small"])],
+    "flock":  [({"count": "one"}, ["cotracker3", "tapir", "raft_small"]),
+               ({}, ["tapir", "cotracker3", "searaft", "raft_small"])],
+    "rigid_path": [({}, ["yolo_bytetrack", "objectron", "cotracker3", "tapir", "raft_small"])],
+    "oscillation": [({"count": "many"}, ["tapir", "cotracker3", "raft_small"]),
+                    ({}, ["cotracker3", "tapir", "raft_small"])],
+}
+_CLASS_FLOOR = {"articulated": "keypointrcnn", "cloth": "raft_small", "fluid": "raft_small",
+                "flock": "raft_small", "rigid_path": "raft_small", "oscillation": "raft_small"}
+
+
+def resolve_best(motion_class, attrs=None):
+    """Pick the best AVAILABLE extractor for a motion class + sub-attributes
+    (subject_type/count/has_text_prompt). Returns (engine, reason). Never None —
+    falls back down the preference list to the class floor (a guaranteed engine)."""
+    attrs = attrs or {}
+    prefer = []
+    for when, names in ROUTING_TABLE.get(motion_class, []):
+        if all(attrs.get(k) == v for k, v in when.items()):
+            prefer = names
+            break
+    tried = []
+    for name in prefer:
+        e = REGISTRY.get(name)
+        if e is None:
+            continue
+        try:
+            ok, why = e.probe()
+        except Exception as ex:
+            ok, why = False, str(ex)
+        if ok:
+            skipped = f" (skipped {', '.join(tried)})" if tried else ""
+            return e, f"{motion_class}/{attrs} -> {name}{skipped}"
+        tried.append(f"{name}: {why}")
+    floor = REGISTRY.get(_CLASS_FLOOR.get(motion_class, "raft_small"))
+    fnote = ""
+    if floor:                                    # probe the floor too — don't claim usable blindly
+        try:
+            fok, fwhy = floor.probe()
+        except Exception as ex:
+            fok, fwhy = False, str(ex)
+        if not fok:
+            fnote = f" (FLOOR ALSO UNAVAILABLE: {fwhy})"
+    return floor, (f"{motion_class}/{attrs}: none of [{', '.join(prefer)}] available "
+                   f"({'; '.join(tried)}) -> floor {floor.name if floor else None}{fnote}")
+
+
+# Startup self-check: every routed class must end in a catch-all {} rule and have a
+# registered floor — so resolve_best can never fall off the end with no engine.
+for _cls, _rules in ROUTING_TABLE.items():
+    assert _rules and _rules[-1][0] == {}, f"routing: {_cls} needs a trailing {{}} catch-all rule"
+    assert _CLASS_FLOOR.get(_cls) in REGISTRY, f"routing: {_cls} floor not registered"

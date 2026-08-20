@@ -114,6 +114,10 @@ TOOL = {
                     "properties": {
                         "label": {"type": "string", "description": "short human name, e.g. 'waving flag'"},
                         "class": {"type": "string", "enum": list(contracts.MOTION_CLASSES.keys())},
+                        "subject_type": {"type": "string", "enum": ["human", "animal", "object"],
+                                         "description": "a person/body part -> human; a live creature -> animal; anything else (vehicle, flag, water, smoke, leaves) -> object. Used to route to the best extractor."},
+                        "count": {"type": "string", "enum": ["one", "many"],
+                                  "description": "'one' = a single instance moves; 'many' = multiple similar instances move together (a flock, crowd, falling leaves)."},
                         "bbox": {
                             "type": "array",
                             "description": "[x,y,w,h] normalized 0-1, origin top-left, tight around the moving element",
@@ -149,6 +153,9 @@ PROMPT = (
     "- Be honest: if a region only appears to move because the camera pans, or does not move at "
     "all, do NOT list it. If nothing moves, set static=true and return an empty list.\n"
     "- confidence reflects how sure you are the element truly moves (not how sure of the class).\n"
+    "- Also set subject_type (human | animal | object) and count (one | many) for each motion — "
+    "e.g. a single boat = object/one; a flock of birds = animal/many; one person walking = human/one. "
+    "Base these on what you actually see.\n"
     "Call report_motions with your findings."
 )
 
