@@ -587,6 +587,8 @@ $('motion-input').onchange = async (e) => {
         };
         library.add(motion); videoRec.motionId = motion.id; renderMotionList();
         library.select(motion.id); applyMotionToActive();
+        // show the extracted skeleton (stick figure) beside the source clip
+        if (window.showSkeleton) { try { await window.showSkeleton(videoUrl, motion.pose, motion.color); } catch (_) {} }
         $('upload-status').textContent = `Added "${name}" — the character now walks like your video.`;
         status(`Character motion "${name}" captured — driving ${act.name}.`, true);
       } catch (err) {
