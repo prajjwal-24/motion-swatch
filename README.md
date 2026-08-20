@@ -88,18 +88,15 @@ in it (class + bounding box + confidence) — replacing filename/layer-name gues
 with real perception. See `docs/BUILD_PLAN.md` Step 1.
 
 ```bash
-./service/run-router.sh                 # first run creates ./routervenv, serves :8771
+cp .env.example .env        # then put your key in .env (ANTHROPIC_API_KEY=sk-ant-...)
+./service/run-router.sh     # first run creates ./routervenv, serves :8771
 ```
 
-**Credentials (TODO — not wired yet).** By default the router calls Claude via
-**Amazon Bedrock** (`CLAUDE_CODE_USE_BEDROCK=1`, model `global.anthropic.claude-opus-4-8`,
-region from `AWS_REGION`), reusing the standard AWS credential chain — no API key
-needed. Everything works up to the auth boundary; `/decompose` currently returns 500
-because the machine's default AWS profile token is expired. To finish later, pick one:
-
-- refresh your default AWS creds so a valid Bedrock token resolves, **or**
-- `export AWS_PROFILE=<profile with Bedrock access>` before starting the router, **or**
-- `export ROUTER_USE_BEDROCK=0 ANTHROPIC_API_KEY=sk-ant-...` to use the direct API.
+**Credentials.** Copy `.env.example` to `.env` and set `ANTHROPIC_API_KEY` — the router
+loads it automatically and uses the direct Anthropic API. If no real key is set it
+falls back to **Amazon Bedrock** (`CLAUDE_CODE_USE_BEDROCK=1`, model
+`global.anthropic.claude-opus-4-8`, region from `AWS_REGION`) via the standard AWS
+credential chain. `.env` is gitignored.
 
 Verify it end-to-end from the CLI (no server needed):
 

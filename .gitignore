@@ -30,3 +30,6 @@ mpvenv/
 
 # VLM Router venv (created by service/run-router.sh)
 routervenv/
+
+# Local secrets (copy .env.example -> .env)
+.env

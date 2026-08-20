@@ -34,12 +34,20 @@ N_FRAMES = int(os.environ.get("ROUTER_FRAMES", "8"))
 MAX_W = 512                       # downscale width sent to the VLM (cost/latency)
 CONF_MIN = float(os.environ.get("ROUTER_CONF_MIN", "0.35"))  # drop hallucinated motions
 
-# ── Backend selection: Bedrock (default in this env) vs direct Anthropic API ──
+# ── Backend selection: real Anthropic key wins, else Bedrock (default in this env) ──
+def _real_key():
+    """A usable ANTHROPIC_API_KEY (not the .env.example placeholder)."""
+    k = os.environ.get("ANTHROPIC_API_KEY", "")
+    return k if (k and "REPLACE" not in k and not k.endswith("...")) else ""
+
+
 def _use_bedrock():
     v = os.environ.get("ROUTER_USE_BEDROCK")
     if v is not None:
         return v not in ("0", "false", "no", "")
-    return os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1"   # inherit the CC setting
+    if _real_key():
+        return False                                        # explicit key -> direct API
+    return os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1"  # else inherit the CC setting
 
 USE_BEDROCK = _use_bedrock()
 AWS_REGION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-west-2"
@@ -62,7 +70,7 @@ def _auth_ready():
             return botocore.session.get_session().get_credentials() is not None
         except Exception:
             return False
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return bool(_real_key())
 
 TOOL = {
     "name": "report_motions",
