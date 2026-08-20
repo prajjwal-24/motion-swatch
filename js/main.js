@@ -616,18 +616,15 @@ $('motion-input').onchange = async (e) => {
 
   // ===== CHARACTER (MediaPipe skeleton) =====
   if (wantCharacter) {
-    // target = the selected rig, else any rig in the scene, else the selected object
-    // as a whole-body puppet, else ask the user to pick one.
+    // The swatch is created regardless of a target — applying it is a separate step.
+    // Optional target: the selected rig, else any rig in the scene, else the selected
+    // object as a whole-body puppet, else none (swatch just goes to the library).
     let target = manualRig ? act0 : (sel.selections && sel.selections.find(s => wrapIsRig(s.wrap)));
     if (target && target !== act0) { sel.selectByIndex(sel.selections.indexOf(target)); showInspector(target); }
-    if (!target) target = act0;
-    if (!target) {
-      $('upload-status').textContent = 'Body motion detected — click the object to animate, then upload again.';
-      e.target.value = ''; return;
-    }
-    const rigged = wrapIsRig(target.wrap);
+    if (!target) target = act0;   // may be null — that's fine
+    const rigged = target && wrapIsRig(target.wrap);
     $('upload-status').textContent = 'Extracting body motion with MediaPipe…' +
-      (rigged ? '' : ` (${target.name} isn't rigged → whole-body puppet)`);
+      (target && !rigged ? ` (${target.name} isn't rigged → whole-body puppet)` : '');
     try {
       const pose = await capture.captureCharacter(file);
       if (!pose || !pose.detected) {
@@ -643,10 +640,16 @@ $('motion-input').onchange = async (e) => {
         videoUrl, fromUpload: true, engine: 'mediapipe',
       };
       library.add(motion); videoRec.motionId = motion.id; renderMotionList();
-      library.select(motion.id); applyMotionToActive();
+      library.select(motion.id);
       if (window.showSkeleton) { try { await window.showSkeleton(videoUrl, motion.pose, motion.color); } catch (_) {} }
-      $('upload-status').textContent = `Added "${name}" → driving ${target.name}` + (rigged ? '.' : ' (puppet — object not rigged).');
-      status(`Character motion "${name}" captured (MediaPipe) — driving ${target.name}.`, true);
+      if (target) {
+        applyMotionToActive();
+        $('upload-status').textContent = `Added "${name}" → driving ${target.name}` + (rigged ? '.' : ' (puppet — object not rigged).');
+        status(`Character motion "${name}" captured (MediaPipe) — driving ${target.name}.`, true);
+      } else {
+        $('upload-status').textContent = `Added "${name}" — click an object to apply it.`;
+        status(`Character motion "${name}" captured (MediaPipe). Click an object to apply it.`, true);
+      }
     } catch (err) {
       $('upload-status').textContent = 'Pose service unreachable. Start it: service/pose_server.py (port 8770).';
     }
