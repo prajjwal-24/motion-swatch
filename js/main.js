@@ -567,9 +567,27 @@ $('motion-input').onchange = async (e) => {
   // pose-sequence swatch. Contextual — only fires when a character rig is active.
   {
     const act = sel.getActive();
-    const isRig = act && act.kind === 'svg' && act.wrap &&
-                  act.wrap.querySelector('[data-motion-mode="character"], [data-role="body"]');
-    if (isRig) {
+    const wrapIsRig = (w) => w && ((w.matches && w.matches('[data-motion-mode="character"]')) ||
+                                   w.querySelector('[data-motion-mode="character"], [data-role="body"]'));
+    const isRig = act && act.kind === 'svg' && wrapIsRig(act.wrap);
+    // Footgun guard: if the scene HAS a character rig but it isn't the selected object,
+    // never silently fall through to RAFT — the user almost always meant the character.
+    const sceneRig = document.querySelector('#artwork-container [data-motion-mode="character"]');
+    if (!isRig && sceneRig) {
+      const goChar = confirm(
+        act ? `"${act.name}" is not the character.\n\nOK = extract BODY motion (MediaPipe) for the character.\nCancel = extract TEXTURE motion (RAFT) for "${act.name}".`
+            : 'Extract BODY motion (MediaPipe) for the character in this scene?\n\nOK = character (MediaPipe)   ·   Cancel = abort');
+      if (goChar) {
+        const rigSel = sel.selections && sel.selections.find(s => wrapIsRig(s.wrap));
+        if (rigSel) { sel.selectByIndex(sel.selections.indexOf(rigSel)); showInspector(rigSel); }
+        else { $('upload-status').textContent = 'Click the character object once, then upload again.'; e.target.value = ''; return; }
+      } else if (!act) {
+        $('upload-status').textContent = 'Cancelled. Select an object first, then upload.'; e.target.value = ''; return;
+      }
+      // re-evaluate after possibly selecting the rig
+    }
+    const act2 = sel.getActive();
+    if (act2 && act2.kind === 'svg' && wrapIsRig(act2.wrap)) {
       $('upload-status').textContent = 'Extracting character motion with MediaPipe… (first run downloads the model)';
       try {
         const pose = await capture.captureCharacter(file);
@@ -590,7 +608,7 @@ $('motion-input').onchange = async (e) => {
         // show the extracted skeleton (stick figure) beside the source clip
         if (window.showSkeleton) { try { await window.showSkeleton(videoUrl, motion.pose, motion.color); } catch (_) {} }
         $('upload-status').textContent = `Added "${name}" — the character now walks like your video.`;
-        status(`Character motion "${name}" captured — driving ${act.name}.`, true);
+        status(`Character motion "${name}" captured — driving ${act2.name}.`, true);
       } catch (err) {
         $('upload-status').textContent = 'Pose service unreachable. Start it: service/pose_server.py (port 8770).';
       }
@@ -618,9 +636,9 @@ $('motion-input').onchange = async (e) => {
     return;
   }
 
-  $('upload-status').textContent = 'Analyzing motion…';
+  $('upload-status').textContent = 'Extracting texture motion with RAFT (optical flow)…';
   capture.onProgress = (p, msg) => {
-    $('upload-status').textContent = msg || `Analyzing… ${Math.round(p * 100)}%`;
+    $('upload-status').textContent = msg || `RAFT analyzing… ${Math.round(p * 100)}%`;
   };
   try {
     const motion = await capture.captureFromFile(file);
