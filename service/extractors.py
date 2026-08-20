@@ -123,21 +123,24 @@ SEARAFT_REPO = os.environ.get("SEARAFT_REPO", os.path.join(os.path.dirname(__fil
 def _searaft_probe():
     if not os.path.isdir(os.path.join(SEARAFT_REPO, "core")):
         return (False, "clone princeton-vl/SEA-RAFT into service/SEA-RAFT (or set SEARAFT_REPO)")
-    if not _has("einops"):
-        return (False, "pip install einops")
+    for dep in ("einops", "scipy"):
+        if not _has(dep):
+            return (False, f"pip install {dep}")
     if not (_has("safetensors") or _has("huggingface_hub")):
         return (False, "pip install huggingface_hub safetensors (or provide a local .pth)")
     return (True, "vendored")
 
 
 def _searaft_build():
-    import sys, json, argparse, glob, numpy as np, torch
+    import sys, json, argparse, numpy as np, torch
     sys.path.append(os.path.join(SEARAFT_REPO, "core"))
     from raft import RAFT                                    # noqa: E402
     dev = "mps" if torch.backends.mps.is_available() else "cpu"
-    cfgs = glob.glob(os.path.join(SEARAFT_REPO, "config/eval/*.json"))
-    args = argparse.Namespace(**json.load(open(sorted(cfgs)[0])))
-    args.scale = 0
+    # config MUST match the checkpoint architecture — README pairs spring-M.json with the
+    # Tartan-C-T-TSKH-spring540x960-M weights (a mismatch silently loads wrong weights/errors).
+    cfg_path = os.environ.get("SEARAFT_CFG", os.path.join(SEARAFT_REPO, "config/eval/spring-M.json"))
+    args = argparse.Namespace(**json.load(open(cfg_path)))
+    args.scale = 0                                           # disable test-time rescale (generic drop-in)
     hf = os.environ.get("SEARAFT_HF", "MemorySlices/Tartan-C-T-TSKH-spring540x960-M")
     model = RAFT.from_pretrained(hf, args=args).to(dev).eval()
 

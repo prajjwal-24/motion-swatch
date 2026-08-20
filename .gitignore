@@ -33,3 +33,6 @@ routervenv/
 
 # Local secrets (copy .env.example -> .env)
 .env
+
+# Vendored SEA-RAFT clone (opt-in engine; run service/setup-searaft.sh)
+service/SEA-RAFT/

@@ -72,7 +72,7 @@ curl -X POST -F file=@clip.mp4 "127.0.0.1:8765/analyze?preproc=evm"          # m
 | `raft_small` (default) / `raft_large` | dense flow | ✅ built-in (torchvision, cached) |
 | `cotracker3` | long-range trajectories | ✅ works when weights are cached (~97MB via torch.hub) |
 | `evm` (Eulerian magnification) | pre-process | ✅ pure numpy+cv2, no download |
-| `searaft` | dense flow | ⚠️ **gated** — needs `git clone princeton-vl/SEA-RAFT` into `service/SEA-RAFT` + `pip install einops huggingface_hub safetensors`; **falls back to raft_small with a note** until then |
+| `searaft` | dense flow | ✅ opt-in — run **`service/setup-searaft.sh`** (clones the repo + installs deps; first call downloads ~79MB weights). Heavier/slower than raft_small and not auto-benchmarked-better, so it stays opt-in and **falls back to raft_small with a note** if not set up. |
 
 The **no-query `/analyze` and `/health` responses are byte-identical** to before, so the app
 is unaffected. An unavailable/unknown engine transparently **falls back** to `raft_small`.
