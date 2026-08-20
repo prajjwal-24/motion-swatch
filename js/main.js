@@ -688,6 +688,8 @@ $('motion-input').onchange = async (e) => {
       // object_path / skeleton engines aren't applied by the texture path yet -> default raft
       const via = routeOpts.engine || routeOpts.tracker || 'raft_small';
       $('upload-status').textContent = `VLM: ${routed.class} → routing to ${via}…`;
+      console.log(`[MotionLife] VLM: ${routed.label} → class=${routed.class} `
+        + `subject=${routed.subject_type} count=${routed.count} → extractor=${via} (${rt.kind}); ${rt.reason}`);
     }
   }
   if (!routeOpts.engine && !routeOpts.tracker) {

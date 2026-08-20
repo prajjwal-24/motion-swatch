@@ -11,10 +11,15 @@ GET /health → {"ok": true, "engine": "raft_small", "device": "mps"}
 Run:  venv/bin/uvicorn server:app --host 127.0.0.1 --port 8765
 """
 import math
+import sys
 import tempfile
 from pathlib import Path
 
 import os
+
+
+def _log(msg):
+    print(msg, file=sys.stderr, flush=True)   # flush so it shows live in the service log
 
 import cv2
 import numpy as np
@@ -50,6 +55,7 @@ TARGET_FPS = float(os.environ.get("MS_FPS", "20"))        # flow-pair sample rat
 GRID = 12                     # trajectories returned on a GRID x GRID grid
 
 import extractors                # pluggable extractor registry (Step 4)
+_log("[engines] registered: " + ", ".join(f"{n}:{e.kind}" for n, e in extractors.REGISTRY.items()))
 
 app = FastAPI(title="motion-swatch-service")
 app.add_middleware(
@@ -879,6 +885,8 @@ def route(cls: str, subject_type: str = None, count: str = None, has_text_prompt
             ok = bool(e.probe()[0])
         except Exception:
             ok = False
+    _log(f"[route] {cls}/{subject_type}/{count} -> {e.name if e else None} "
+         f"({e.kind if e else '-'}, avail={ok}) · {reason}")
     return {"engine": e.name if e else None, "kind": e.kind if e else None,
             "available": ok, "reason": reason}
 
@@ -968,4 +976,7 @@ async def analyze(file: UploadFile = File(...),
         resp["tracker"] = used_tracker
         if notes:
             resp["notes"] = notes
+    _log(f"[analyze] FLOW={used_engine} TRAJ={used_tracker} preproc={preproc or '-'} "
+         f"frames={len(frames)} regions={len(regions)}"
+         + (f" | NOTES: {'; '.join(notes)}" if notes else ""))
     return resp
