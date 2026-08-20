@@ -576,59 +576,83 @@ $('motion-input').onchange = async (e) => {
   const videoUrl = URL.createObjectURL(file);
   const videoRec = addVideoThumb(videoUrl, file.name.replace(/\.[^.]+$/, ''));
 
-  // CHARACTER MOTION: if the selected object is a rigged character, capture a
-  // real skeletal walk from the video (MediaPipe pose service) and build a
-  // pose-sequence swatch. Contextual — only fires when a character rig is active.
-  {
-    const act = sel.getActive();
-    const wrapIsRig = (w) => w && ((w.matches && w.matches('[data-motion-mode="character"]')) ||
-                                   w.querySelector('[data-motion-mode="character"], [data-role="body"]'));
-    const isRig = act && act.kind === 'svg' && wrapIsRig(act.wrap);
-    // Footgun guard: if the scene HAS a character rig but it isn't the selected object,
-    // never silently fall through to RAFT — the user almost always meant the character.
-    const sceneRig = document.querySelector('#artwork-container [data-motion-mode="character"]');
-    if (!isRig && sceneRig) {
-      const goChar = confirm(
-        act ? `"${act.name}" is not the character.\n\nOK = extract BODY motion (MediaPipe) for the character.\nCancel = extract TEXTURE motion (RAFT) for "${act.name}".`
-            : 'Extract BODY motion (MediaPipe) for the character in this scene?\n\nOK = character (MediaPipe)   ·   Cancel = abort');
-      if (goChar) {
-        const rigSel = sel.selections && sel.selections.find(s => wrapIsRig(s.wrap));
-        if (rigSel) { sel.selectByIndex(sel.selections.indexOf(rigSel)); showInspector(rigSel); }
-        else { $('upload-status').textContent = 'Click the character object once, then upload again.'; e.target.value = ''; return; }
-      } else if (!act) {
-        $('upload-status').textContent = 'Cancelled. Select an object first, then upload.'; e.target.value = ''; return;
-      }
-      // re-evaluate after possibly selecting the rig
+  const wrapIsRig = (w) => w && ((w.matches && w.matches('[data-motion-mode="character"]')) ||
+                                 w.querySelector('[data-motion-mode="character"], [data-role="body"]'));
+
+  // ===== VLM AUTO-ROUTE ==========================================================
+  // The router LOOKS AT THE CLIP and picks the extractor — you don't declare the type.
+  //   articulated (a body) -> MediaPipe skeleton   ·   everything else -> RAFT texture
+  // If the router is down/unauthed it falls back to the manual selection heuristic.
+  let routed = null;
+  try {
+    $('upload-status').textContent = 'Reading the clip with the VLM router…';
+    const contract = await capture.decomposeMotion(file);
+    if (contract && !contract.static && contract.motions && contract.motions.length) {
+      routed = contract.motions.slice().sort((a, b) => b.confidence - a.confidence)[0];
     }
-    const act2 = sel.getActive();
-    if (act2 && act2.kind === 'svg' && wrapIsRig(act2.wrap)) {
-      $('upload-status').textContent = 'Extracting character motion with MediaPipe… (first run downloads the model)';
-      try {
-        const pose = await capture.captureCharacter(file);
-        if (!pose || !pose.detected) {
-          $('upload-status').textContent = 'No person detected — use a clear, full-body walking clip.';
-          e.target.value = ''; return;
-        }
-        const name = file.name.replace(/\.[^.]+$/, '') || 'Character Walk';
-        const motion = {
-          id: 'char-' + Date.now(), name, desc: `Character motion · MediaPipe (${pose.detected}/${pose.total} frames)`,
-          color: '#34d399', character: true,
-          pose: { joints: pose.joints, fps: pose.fps, frames: pose.frames.filter(Boolean) },
-          params: { frequency: 1, amplitude: 0.2, direction: 0, turbulence: 0, damping: 0, phaseSpread: 0 },
-          videoUrl, fromUpload: true, engine: 'mediapipe',
-        };
-        library.add(motion); videoRec.motionId = motion.id; renderMotionList();
-        library.select(motion.id); applyMotionToActive();
-        // show the extracted skeleton (stick figure) beside the source clip
-        if (window.showSkeleton) { try { await window.showSkeleton(videoUrl, motion.pose, motion.color); } catch (_) {} }
-        $('upload-status').textContent = `Added "${name}" — the character now walks like your video.`;
-        status(`Character motion "${name}" captured — driving ${act2.name}.`, true);
-      } catch (err) {
-        $('upload-status').textContent = 'Pose service unreachable. Start it: service/pose_server.py (port 8770).';
-      }
-      e.target.value = ''; return;
+  } catch (_) {}
+
+  const act0 = sel.getActive();
+  const manualRig = act0 && act0.kind === 'svg' && wrapIsRig(act0.wrap);
+  const sceneRig = document.querySelector('#artwork-container [data-motion-mode="character"]');
+  let wantCharacter;
+  if (routed) {
+    wantCharacter = (routed.class === 'articulated');
+    $('upload-status').textContent =
+      `VLM detected: ${routed.label} → ${routed.class} (${Math.round(routed.confidence * 100)}%) · ` +
+      (wantCharacter ? 'MediaPipe' : 'RAFT');
+  } else {
+    // router unavailable → previous manual behavior (selection-based), with the
+    // footgun confirm so a character scene never silently falls through to RAFT.
+    wantCharacter = manualRig;
+    if (!wantCharacter && sceneRig) {
+      const goChar = confirm(
+        act0 ? `Router offline. "${act0.name}" is not the character.\n\nOK = BODY motion (MediaPipe) for the character.\nCancel = TEXTURE motion (RAFT) for "${act0.name}".`
+             : 'Router offline. Extract BODY motion (MediaPipe) for the character?\n\nOK = character   ·   Cancel = abort');
+      if (goChar) wantCharacter = true;
+      else if (!act0) { $('upload-status').textContent = 'Cancelled. Select an object first, then upload.'; e.target.value = ''; return; }
     }
   }
+
+  // ===== CHARACTER (MediaPipe skeleton) =====
+  if (wantCharacter) {
+    // target = the selected rig, else any rig in the scene, else the selected object
+    // as a whole-body puppet, else ask the user to pick one.
+    let target = manualRig ? act0 : (sel.selections && sel.selections.find(s => wrapIsRig(s.wrap)));
+    if (target && target !== act0) { sel.selectByIndex(sel.selections.indexOf(target)); showInspector(target); }
+    if (!target) target = act0;
+    if (!target) {
+      $('upload-status').textContent = 'Body motion detected — click the object to animate, then upload again.';
+      e.target.value = ''; return;
+    }
+    const rigged = wrapIsRig(target.wrap);
+    $('upload-status').textContent = 'Extracting body motion with MediaPipe…' +
+      (rigged ? '' : ` (${target.name} isn't rigged → whole-body puppet)`);
+    try {
+      const pose = await capture.captureCharacter(file);
+      if (!pose || !pose.detected) {
+        $('upload-status').textContent = 'No person detected — use a clear, full-body clip.';
+        e.target.value = ''; return;
+      }
+      const name = file.name.replace(/\.[^.]+$/, '') || 'Character Motion';
+      const motion = {
+        id: 'char-' + Date.now(), name, desc: `Character motion · MediaPipe (${pose.detected}/${pose.total} frames)`,
+        color: '#34d399', character: true,
+        pose: { joints: pose.joints, fps: pose.fps, frames: pose.frames.filter(Boolean) },
+        params: { frequency: 1, amplitude: 0.2, direction: 0, turbulence: 0, damping: 0, phaseSpread: 0 },
+        videoUrl, fromUpload: true, engine: 'mediapipe',
+      };
+      library.add(motion); videoRec.motionId = motion.id; renderMotionList();
+      library.select(motion.id); applyMotionToActive();
+      if (window.showSkeleton) { try { await window.showSkeleton(videoUrl, motion.pose, motion.color); } catch (_) {} }
+      $('upload-status').textContent = `Added "${name}" → driving ${target.name}` + (rigged ? '.' : ' (puppet — object not rigged).');
+      status(`Character motion "${name}" captured (MediaPipe) — driving ${target.name}.`, true);
+    } catch (err) {
+      $('upload-status').textContent = 'Pose service unreachable. Start it: service/pose_server.py (port 8770).';
+    }
+    e.target.value = ''; return;
+  }
+  // else: TEXTURE — fall through to the leaf/RAFT paths below.
 
   // DEMO: a falling-leaves clip → show the real extraction moment over the
   // video, but hand back a hand-tuned per-leaf fall that looks best on the art.
