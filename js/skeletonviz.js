@@ -21,11 +21,32 @@ const BONES = [
   ['l_hip', 'l_knee'], ['l_knee', 'l_ank'], ['r_hip', 'r_knee'], ['r_knee', 'r_ank'],
 ];
 
+// Shared skeleton renderer — used by the preview modal AND the library swatch (main.js).
+// Draws ONE bbox-normalized frame ([[x,y,c]xN]) into a W×H canvas box.
+window.drawSkeletonFrame = function (ctx, frame, joints, W, H, opts) {
+  opts = opts || {};
+  const pad = opts.pad != null ? opts.pad : 8;
+  const idx = {}; joints.forEach((n, i) => { idx[n] = i; });
+  const P = (name) => {
+    const p = frame[idx[name]];
+    return p ? [pad + p[0] * (W - 2 * pad), pad + p[1] * (H - 2 * pad)] : null;
+  };
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = opts.color || '#34d399';
+  ctx.lineWidth = opts.lineWidth != null ? opts.lineWidth : 3;
+  for (const [a, b] of BONES) {
+    const pa = P(a), pb = P(b);
+    if (pa && pb) { ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke(); }
+  }
+  ctx.fillStyle = opts.jointColor || '#ffd23f';
+  const jr = opts.jointR != null ? opts.jointR : 3;
+  for (const nm of joints) { const p = P(nm); if (p) { ctx.beginPath(); ctx.arc(p[0], p[1], jr, 0, 7); ctx.fill(); } }
+};
+
 window.showSkeleton = function showSkeleton(videoUrl, pose, color = '#34d399') {
   return new Promise((resolve) => {
     const frames = ((pose && pose.frames) || []).filter(Boolean);
     if (!frames.length || !pose.joints) { resolve(); return; }
-    const idx = {}; pose.joints.forEach((n, i) => { idx[n] = i; });
     const fps = pose.fps || 15, n = frames.length;
 
     const modal = document.createElement('div');
@@ -77,23 +98,10 @@ window.showSkeleton = function showSkeleton(videoUrl, pose, color = '#34d399') {
     modal.querySelector('.sk-skip').onclick = finish;
     modal.onclick = (e) => { if (e.target === modal) finish(); };
 
-    const W = canvas.width, H = canvas.height, pad = 70;
-    function P(f, name) {
-      const p = f[idx[name]];
-      return p ? [pad + p[0] * (W - 2 * pad), pad + p[1] * (H - 2 * pad)] : null;
-    }
+    const W = canvas.width, H = canvas.height;
     function drawFrame(f) {
       ctx.clearRect(0, 0, W, H);
-      ctx.lineCap = 'round'; ctx.strokeStyle = color; ctx.lineWidth = 6;
-      for (const [a, b] of BONES) {
-        const pa = P(f, a), pb = P(f, b);
-        if (pa && pb) { ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke(); }
-      }
-      ctx.fillStyle = '#ffd23f';
-      for (const nm of pose.joints) {
-        const p = P(f, nm);
-        if (p) { ctx.beginPath(); ctx.arc(p[0], p[1], 7, 0, 7); ctx.fill(); }
-      }
+      window.drawSkeletonFrame(ctx, f, pose.joints, W, H, { pad: 70, color, lineWidth: 6, jointR: 7 });
     }
     function loop() {
       if (done) return;

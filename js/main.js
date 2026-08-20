@@ -45,6 +45,10 @@ function hexToRgb(hex) {
 }
 
 function buildChipState(m) {
+  // character motion: the swatch IS the extracted stick figure (animated)
+  if (m.pose && m.pose.joints && m.pose.frames && m.pose.frames.length) {
+    return { pose: { joints: m.pose.joints, fps: m.pose.fps || 15, frames: m.pose.frames.filter(Boolean) } };
+  }
   if (m.trajectories && m.trajectories.length >= 25) {
     // subsample the 12x12 grid to 5x5, store drift-removed relative tracks
     const G = Math.round(Math.sqrt(m.trajectories.length));   // 12
@@ -119,10 +123,20 @@ function chipLoop() {
   requestAnimationFrame(chipLoop);
   const t = performance.now() / 1000;
   for (const tile of chipTiles) {
-    const { canvas, ctx, motion, tracks } = tile;
+    const { canvas, ctx, motion, tracks, pose } = tile;
     if (!canvas.isConnected) continue;
     const S = canvas.width;
     const [r, g, b] = hexToRgb(motion.color || '#7c6cff');
+
+    // ---- character swatch: the extracted stick figure, looping ----
+    if (pose && window.drawSkeletonFrame) {
+      ctx.fillStyle = '#0e1420'; ctx.fillRect(0, 0, S, S);
+      const n = pose.frames.length;
+      const fi = Math.floor(t * pose.fps) % n;
+      window.drawSkeletonFrame(ctx, pose.frames[fi], pose.joints, S, S,
+        { pad: S * 0.17, color: motion.color || '#34d399', lineWidth: Math.max(2, S * 0.02), jointR: Math.max(2, S * 0.02) });
+      continue;
+    }
 
     // motion-blur fade instead of clear → dots drag trails
     ctx.fillStyle = 'rgba(26,27,42,0.28)';
