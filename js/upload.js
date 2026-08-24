@@ -2,9 +2,11 @@
    Handles character (MediaPipe), multi-motion (bbox-localized per detected motion),
    the falling-leaves demo, and single-motion RAFT capture. Exposed as
    window.handleMotionUpload; main.js wires it to the #motion-input change event.
-   References main.js globals (capture, library, sel, $, status, renderMotionList,
-   addVideoThumb, synthFallTrajectories, uploadedVideos) at call time via global scope. */
+   main.js is IIFE-wrapped, so its symbols are NOT globals — it hands them across via
+   window.__mlUpload, which we destructure at call time (not load time). */
 window.handleMotionUpload = async (e) => {
+  const { $, status, capture, library, sel, renderMotionList, addVideoThumb,
+          synthFallTrajectories, showInspector, applyMotionToActive } = window.__mlUpload;
   const file = e.target.files[0]; if (!file) return;
 
   // show the clip in the Videos section

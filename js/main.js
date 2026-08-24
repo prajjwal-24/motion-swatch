@@ -638,4 +638,10 @@ loadScene('poster');
 // expose for automated testing
 window.__ms = { sel, library, animator, loadScene, loadUploadedSVG, loadRasterImage };
 
+// Bridge for upload.js: this file is IIFE-wrapped, so the symbols above are
+// function-scoped — a separate <script> can't see them. Hand them across explicitly
+// (upload.js destructures window.__mlUpload at call time).
+window.__mlUpload = { $, status, capture, library, sel, renderMotionList,
+  addVideoThumb, synthFallTrajectories, showInspector, applyMotionToActive };
+
 })();
