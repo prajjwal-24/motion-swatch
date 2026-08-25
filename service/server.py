@@ -19,7 +19,7 @@ def _log(msg):
 
 
 from config import DEVICE
-from video_io import read_frames, _crop_frames
+from video_io import read_frames, _crop_frames, align_mask
 from flow import ENGINE, raft_flow_series
 from distill import distill, grid_trajectories
 from segment import segment_regions
@@ -35,29 +35,23 @@ app.add_middleware(
 )
 
 
-def _preprocess_mask(clip_path, bbox_str, flow_h, flow_w):
-    """Step 2 integration: run the preprocess helper (object mask + camera motion) and
-    return (bool mask aligned to the flow array [flow_h, flow_w], region_preprocess).
+def _preprocess_mask(clip_path, bbox_str):
+    """Step 2 integration: run the preprocess helper (object mask + camera motion).
 
-    preprocess.py is cv2+numpy only, so we call it IN-PROCESS (no HTTP hop to :8772).
-    Its mask is computed on the FULL frame at its own analysis width, so we resize with
-    NEAREST to the flow resolution — a mask is strictly better than a rectangular crop,
-    which is why ?preprocess=1 REPLACES the ?bbox= crop rather than composing with it.
-    Returns (None, None) if no usable mask (caller then extracts over the whole frame).
+    Returns (raw uint8 mask at preprocess's OWN resolution, region_preprocess contract).
+    Deliberately does no resampling — video_io.align_mask owns that, so the mask goes
+    through the identical geometry as the frames it selects (see the note there about
+    480x270 vs 480x272). preprocess.py is cv2+numpy only, so this runs IN-PROCESS;
+    no HTTP hop to :8772. Returns (None, contract) when there's no mask to use.
     """
     import numpy as np
-    import cv2
     import preprocess as P
     contract, _warn, _viz = P.preprocess(clip_path, [float(v) for v in bbox_str.split(",")][:4]
                                          if bbox_str else [0, 0, 1, 1])
     m = contract.get("mask")
     if not m or not m.get("data"):
         return None, contract
-    flat = P.decode_mask_rle(m["data"], m["w"], m["h"]).astype(np.uint8)
-    if (m["h"], m["w"]) != (flow_h, flow_w):
-        flat = cv2.resize(flat, (flow_w, flow_h), interpolation=cv2.INTER_NEAREST)
-    mask = flat.astype(bool)
-    return (mask if mask.sum() >= 4 else None), contract
+    return P.decode_mask_rle(m["data"], m["w"], m["h"]).astype(np.uint8), contract
 
 
 # ---------------------------------------------------------------- routes
@@ -111,24 +105,32 @@ async def analyze(file: UploadFile = File(...),
 
         notes = []
         region = None          # region_preprocess contract when ?preprocess=1
-        obj_mask = None        # bool [H,W] aligned to the flow array
+        raw_mask = None        # uint8 mask at preprocess's own resolution
+        obj_mask = None        # bool [H,W] aligned to the flow array (set after flow)
+        src_hw = (frames.shape[1], frames.shape[2])   # frame size BEFORE any crop
 
-        # (Step 2) object mask + camera motion. The mask REPLACES the bbox crop —
-        # a real mask beats a rectangle, and it keeps full-frame coordinates.
+        # (Step 2) object mask + camera motion, seeded by the bbox.
         if preprocess:
             try:
-                obj_mask, region = _preprocess_mask(tmp.name, bbox,
-                                                    frames.shape[1], frames.shape[2])
-                if obj_mask is None:
+                raw_mask, region = _preprocess_mask(tmp.name, bbox)
+                if raw_mask is None:
                     notes.append("preprocess found no usable mask; extracted over the full frame")
             except Exception as ex:
                 notes.append(f"preprocess failed, extracted over the full frame: {ex}")
 
-        # crop to one detected motion's region — skipped when a mask is in use
-        if bbox and obj_mask is None:
+        # crop to one detected motion's region. The mask COMPOSES with the crop rather
+        # than replacing it (mask ∩ crop): the crop supplies resolution (upscale to >=128px
+        # for RAFT) and re-centres the GRIDxGRID trajectory field on the object, while the
+        # mask excludes in-rectangle background from distill's statistics. Measured on
+        # flag.mp4: mask-only left the trajectory field byte-identical to whole-frame
+        # (energy 4.457 both) while the crop gave 10.367 — dropping the crop silently
+        # traded the animated motion field for better scalar params.
+        cropped = None
+        if bbox:
             cropped = _crop_frames(frames, bbox)
             if cropped is None or len(cropped) < 13:
                 notes.append(f"bbox {bbox} too small; used full frame")
+                cropped = None
             else:
                 frames = cropped
 
@@ -161,8 +163,30 @@ async def analyze(file: UploadFile = File(...),
             flows = raft_flow_series(frames)
             used_engine = ENGINE
 
+        # align the mask onto the flow array LAST: out_hw absorbs the crop and any
+        # shape change a preproc engine introduced, so mask and flow can't drift apart.
+        if raw_mask is not None:
+            try:
+                obj_mask = align_mask(raw_mask, src_hw,
+                                      bbox if cropped is not None else None,
+                                      flows.shape[-2:])
+                if int(obj_mask.sum()) < 4:
+                    obj_mask = None
+                    notes.append("object mask covers <4 px of the analyzed region; "
+                                 "used the whole region")
+            except Exception as ex:
+                obj_mask = None
+                notes.append(f"mask alignment failed, used the whole region: {ex}")
+
         # the object mask (if any) restricts distill's statistics to the moving object
         params = distill(flows, fps, mask=obj_mask)
+        if params is None and obj_mask is not None:
+            # a thin mask can starve distill (<4 px, or <12 usable frames) — never let
+            # that turn a request that would have worked into an error
+            params = distill(flows, fps)
+            if params is not None:
+                notes.append("masked statistics were too sparse; used the whole region")
+                obj_mask = None
         if params is None:
             return {"ok": False, "error": "not enough motion data"}
 
@@ -186,6 +210,10 @@ async def analyze(file: UploadFile = File(...),
             trajectories = grid_trajectories(flows)
             used_tracker = "raft-grid"
 
+        # NOTE: segment_regions still runs unmasked. It builds its own per-region pixel
+        # masks from flow clustering, and with ?bbox= the crop has already localized the
+        # field; feeding the object mask in here (cell-coverage gate + per-region
+        # intersect) is a refinement, not part of the Step 2 contract.
         regions = segment_regions(flows, fps, filename=file.filename or "")
 
         resp = {
@@ -206,13 +234,19 @@ async def analyze(file: UploadFile = File(...),
             m = region.get("mask") or {}
             resp["preprocess"] = {
                 "masked": obj_mask is not None,
-                "mask_coverage": m.get("coverage"),
+                # coverage WITHIN the analyzed region — the fraction of pixels that
+                # actually shaped the numbers. mask_coverage_frame is the whole-frame
+                # figure from the preprocess contract (the two differ once a bbox crops).
+                "mask_coverage": (round(float(obj_mask.mean()), 4)
+                                  if obj_mask is not None else None),
+                "mask_coverage_frame": m.get("coverage"),
                 "mask_method": m.get("method"),
                 "camera": region.get("camera"),
                 "engine": region.get("engine"),
             }
         _log(f"[analyze] FLOW={used_engine} TRAJ={used_tracker} preproc={preproc or '-'} "
-             f"bbox={bbox or '-'} mask={'yes' if obj_mask is not None else 'no'} "
+             f"bbox={bbox or '-'} crop={'yes' if cropped is not None else 'no'} "
+             f"mask={f'{obj_mask.mean() * 100:.0f}% of region' if obj_mask is not None else 'no'} "
              f"frames={len(frames)} regions={len(regions)}"
              + (f" | NOTES: {'; '.join(notes)}" if notes else ""))
         return resp
