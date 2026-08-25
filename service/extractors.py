@@ -343,9 +343,21 @@ for _n, _k, _desc, _need, _setup in [
     ("objectron",    OBJECT_PATH, "MediaPipe Objectron — 3D box (shoe/chair/cup/camera only)", ("mediapipe",), "install mediapipe (py<=3.12); only 4 categories"),
     ("mdm",          TEXT2MOTION, "MDM/MotionGPT — text prompt -> skeleton (no video)", ("mdm",),     "clone GuyTevet/motion-diffusion-model + weights"),
     ("droid_slam",   CAMERA,      "DROID-SLAM — camera pose (vs OpenCV homography floor)", ("droid_slam",), "clone princeton-vl/DROID-SLAM (CUDA); floor = ORB affine"),
-    ("sam2",         SEGMENT,     "SAM 2 — clean object mask (vs GrabCut floor)",   ("sam2",),        "pip install 'git+…/sam2' + checkpoint; floor = GrabCut+motion"),
 ]:
     register(Engine(_n, _k, _desc, probe=_gate(_setup, *_need), factory=_stub(_setup)))
+
+
+# ── SEGMENT: SAM 2 box-prompted object mask — real engine, see service/sam2_seg.py ──
+def _sam2_build():
+    import sam2_seg
+    return sam2_seg.box_mask             # (frame_bgr, (x,y,w,h)) -> (mask uint8, iou)
+
+
+register(Engine("sam2", SEGMENT, "SAM 2.1 hiera-tiny — box-prompted object mask (MPS)",
+                probe=lambda: __import__("sam2_seg").available() if _has("sam2")
+                              else (False, "pip install 'git+https://github.com/"
+                                           "facebookresearch/sam2.git'; floor = GrabCut+motion"),
+                factory=_sam2_build, default=True))
 
 
 # ── DEPTH: Depth Anything V2 (Small, apache-2.0) — real engine, see service/depth.py ──

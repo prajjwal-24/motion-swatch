@@ -7,3 +7,6 @@ uvicorn
 python-multipart
 # Optional engines (the service runs without them; /engines reports what's missing):
 transformers>=5.15   # Depth Anything V2 Small — /analyze?preprocess=1&depth=1
+# SAM 2.1 hiera-tiny — object mask for ?preprocess=1 (falls back to GrabCut when absent).
+# Not on PyPI, so it is not installed by -r; install explicitly, or set MS_SAM2=0 to skip:
+#   pip install 'git+https://github.com/facebookresearch/sam2.git'
