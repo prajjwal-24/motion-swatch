@@ -10,6 +10,24 @@
  *   - Raster selection → set the floating clone's CSS transform.
  */
 
+/*
+ * ---- Step 8: class → applicator ----
+ * Which applicator can drive a swatch is decided ONCE, server-side, by
+ * contracts.swatch_applicator(kind, class) and stamped into the swatch as
+ * `applicator` — so the taxonomy lives in exactly one file and the two axes
+ * (what the motion IS vs. what shape of data the swatch CARRIES) stay resolved
+ * together. This table is only the fallback for a motion that carries a router
+ * `class` but no swatch, and it must mirror MOTION_CLASSES in contracts.py.
+ */
+const APPLICATOR_BY_CLASS = {
+  articulated: 'skeletal',
+  cloth: 'wave',
+  fluid: 'flow_field',
+  flock: 'flock_drift',
+  rigid_path: 'path_travel',
+  oscillation: 'oscillate',
+};
+
 class Animator {
   constructor(selectionManager, motionLibrary) {
     this.sel = selectionManager;
@@ -44,7 +62,7 @@ class Animator {
         : (s.bounds.x * 0.01 + s.bounds.y * 0.03);
 
       // ---- character / skeletal motion: a pose-sequence swatch drives a rig ----
-      if (s.kind === 'svg' && motion.pose && motion.pose.frames &&
+      if (s.kind === 'svg' && this._poseFor(motion) &&
           s.wrap.querySelector('[data-motion-mode="character"], [data-role="body"]')) {
         this._applyCharacter(s, motion, rt, intensity);
         continue;
@@ -67,29 +85,33 @@ class Animator {
       // the clip (?path=1 -> yolo_bytetrack -> objpath.build_path). Measured motion is
       // the point of this tool, so it takes precedence over the name-keyed curation
       // below, which stays as the fallback for presets and untracked clips.
-      if (s.kind === 'svg' && motion.path && motion.path.points && motion.path.points.length > 1) {
+      if (s.kind === 'svg' && this._pathFor(motion)) {
         this._applyPathTravel(s, motion, rt, intensity);
         continue;
       }
 
-      // ---- hardcoded scenery behaviors, keyed on the object's name ----
-      // (demo curation: whatever swatch is dropped on the "birds" / "clouds"
-      //  group, it animates the way a viewer expects that object to move.)
-      if (s.kind === 'svg' && /\bbirds?\b/i.test(s.name)) {
-        this._applyBirds(s, motion, rt, intensity);
-        continue;
-      }
-      if (s.kind === 'svg' && /\bclouds?\b/i.test(s.name)) {
-        this._applyClouds(s, motion, rt, intensity);
-        continue;
-      }
-      if (s.kind === 'svg' && /\briver|ripples?\b/i.test(s.name)) {
-        this._applyRiver(s, motion, rt, intensity);
-        continue;
-      }
-      if (s.kind === 'svg' && /\bboat|rowboat|canoe|ferry|ship\b/i.test(s.name)) {
-        this._applyBoat(s, motion, rt, intensity);
-        continue;
+      // ---- (Step 8) CLASS-KEYED APPLICATION ----
+      // The applicator is chosen by what the motion IS, never by what the layer is
+      // CALLED: rename "Birds" to "Layer 7" and a flock swatch still drifts it as a
+      // flock; drop a cloth swatch on that same group and it ripples instead.
+      // _applicatorFor returns '' only for a motion nothing classified (the built-in
+      // presets, and the in-browser Lucas-Kanade fallback) — and only then do the
+      // name-keyed curated behaviours below get a turn.
+      const app = this._applicatorFor(motion);
+      if (s.kind === 'svg' && app && this._applyByClass(s, motion, app, rt, intensity)) continue;
+
+      // ---- curated scenery behaviours, keyed on the object's NAME ----
+      // FALLBACK ONLY (Step 8): these run for the built-in presets, which carry no
+      // class and no captured field, so there is nothing real to prefer over them.
+      // A classified swatch never reaches here — real extracted motion always wins,
+      // even when the curated version would look nicer.
+      if (s.kind === 'svg' && !app) {
+        if (/\bbirds?\b/i.test(s.name)) { this._applyBirds(s, motion, rt, intensity); continue; }
+        if (/\bclouds?\b/i.test(s.name)) { this._applyClouds(s, motion, rt, intensity); continue; }
+        if (/\briver|ripples?\b/i.test(s.name)) { this._applyRiver(s, motion, rt, intensity); continue; }
+        if (/\bboat|rowboat|canoe|ferry|ship\b/i.test(s.name)) {
+          this._applyBoat(s, motion, rt, intensity); continue;
+        }
       }
 
       // ---- per-glyph text animation: letters ride the motion individually ----
@@ -110,59 +132,9 @@ class Animator {
       }
 
       // ---- wave (cloth) mode: deform the geometry itself ----
-      if (s.kind === 'svg' && s.waveMode) {
-        if (!s._wave) s._wave = buildWaveData(s.wrap);
-        if (s._wave) {
-          const width = Math.max(1, s._wave.maxX - s._wave.minX);
-          // captured motion with trajectories → replay the REAL motion field
-          if (s._field === undefined) s._field = buildTrajField(motion) || null;
-          if (s._field && s._fieldMotion !== motion.id) {
-            s._field = buildTrajField(motion) || null;
-            s._fieldMotion = motion.id;
-          }
-          // A FLAG must flutter as one coherent sheet anchored at the pole. The
-          // raw captured trajectory field is chaotic and, replayed independently
-          // on clean geometric stripes, tears them apart. So for flag-like
-          // objects we always use the coherent synthetic pole-anchored wave —
-          // still DRIVEN by the captured motion's params (freq/amplitude from
-          // the real video), just applied as a smooth traveling wave.
-          const coherent = /flag|banner|pennant|ensign|standard/i.test(s.name);
-          if (s._field && !coherent) {
-            const height = Math.max(1, s._wave.maxY - s._wave.minY);
-            for (const pd of s._wave.paths) {
-              if (pd.detail) {
-                // fine detail (chakra/emblem): ride the cloth, keep crisp geometry
-                detailRide(pd, s._wave.minX, s._wave.minY, width, height, s._field, rt, intensity);
-              } else {
-                pd.el.setAttribute('d', fieldD(pd, s._wave.minX, s._wave.minY,
-                  width, height, s._field, rt, intensity));
-              }
-            }
-          } else {
-            // preset → synthetic traveling sine
-            const p = motion.params;
-            const A = WAVE_AMP_PX * (0.35 + p.amplitude) * intensity;
-            const k = 2 * Math.PI * WAVE_CYCLES * (0.5 + p.phaseSpread) / width;
-            const phase = 2 * Math.PI * p.frequency * rt;
-            const turb = p.turbulence * 4 * intensity;
-            const height = Math.max(1, s._wave.maxY - s._wave.minY);
-            for (const pd of s._wave.paths) {
-              if (pd.detail) {
-                // ride the synthetic wave at the detail's x, keeping crisp geometry
-                const ramp = Math.pow((pd.cx - s._wave.minX) / width, 1.15);
-                const arg = phase - k * (pd.cx - s._wave.minX);
-                const dyv = A * ramp * Math.sin(arg) + turb * ramp * _noise(pd.cx * 0.11 + phase * 1.3);
-                const dxv = A * 0.22 * ramp * Math.cos(arg);
-                pd.el.setAttribute('transform', `translate(${dxv.toFixed(2)} ${dyv.toFixed(2)})`);
-              } else {
-                pd.el.setAttribute('d', waveD(pd, s._wave.minX, width, A, k, phase, turb));
-              }
-            }
-          }
-          s.wrap.setAttribute('transform', '');
-          continue;
-        }
-      }
+      // Same applicator the `cloth` class dispatches to. Reached when the artwork is
+      // deformable but the motion carries no class (a preset, or a pre-Step-7 swatch).
+      if (s.kind === 'svg' && s.waveMode && this._applyCloth(s, motion, rt, intensity)) continue;
 
       const { dx, dy, rot } = computeMotion(motion.params, seed, rt, intensity);
 
@@ -185,6 +157,262 @@ class Animator {
 
   // deterministic pseudo-random in [0,1) from a leaf index + channel
   _leafRnd(i, k) { const x = Math.sin(i * 12.9898 + k * 78.233) * 43758.5453; return x - Math.floor(x); }
+
+  /*
+   * (Step 8) Which applicator drives this motion — '' when nothing classified it.
+   *
+   * The swatch's own `applicator` is preferred because the service already resolved
+   * (kind, class) there: a rigid_path clip emits a `path` swatch AND a `texture` one,
+   * and only the first can drive path_travel. Swatches are ordered primary-first, so
+   * the first one that was actually classified wins.
+   *
+   * A swatch with an EMPTY class is skipped deliberately. contracts.swatch_applicator
+   * still fills in a payload-appropriate default for it ('oscillate' for a texture),
+   * but that is a shape fallback, not a classification — treating it as one would
+   * silently retire the presets' curated behaviour on the strength of a guess.
+   */
+  _applicatorFor(motion) {
+    for (const sw of (motion.swatches || [])) {
+      if (sw && sw.class && sw.applicator) return sw.applicator;
+    }
+    return APPLICATOR_BY_CLASS[motion.class] || '';
+  }
+
+  /*
+   * The captured pose sequence, from wherever it lives. `motion.pose` is the frozen
+   * shape the library has always stored; a Step-7 skeleton swatch nests the same
+   * {joints, fps, frames} under `.pose`, so a swatch-only motion drives the rig too
+   * (buildTrajField() reads a texture swatch the same way).
+   */
+  _poseFor(motion) {
+    if (motion.pose && motion.pose.frames && motion.pose.frames.length) return motion.pose;
+    for (const sw of (motion.swatches || [])) {
+      if (sw && sw.kind === 'skeleton' && sw.pose && sw.pose.frames && sw.pose.frames.length) {
+        return sw.pose;
+      }
+    }
+    return null;
+  }
+
+  /* Same for the travel path: `motion.path` or a Step-7 `path` swatch's `.path`. A path
+     needs at least two points to be a path at all, which is also the check that keeps an
+     untracked rigid_path clip out of path_travel. */
+  _pathFor(motion) {
+    const ok = p => p && p.points && p.points.length > 1 ? p : null;
+    if (ok(motion.path)) return motion.path;
+    for (const sw of (motion.swatches || [])) {
+      if (sw && sw.kind === 'path' && ok(sw.path)) return sw.path;
+    }
+    return null;
+  }
+
+  /*
+   * Run the applicator the class asked for. Returns false when it CANNOT run on this
+   * artwork — a flock needs several children, cloth needs deformable geometry — and
+   * the caller then falls through rather than pretending the motion was applied.
+   */
+  _applyByClass(s, motion, app, t, intensity) {
+    switch (app) {
+      case 'skeletal':
+        // the rig check runs earlier in _applyAll (it needs the pose payload too);
+        // reaching here means this artwork has no rig for the joints to drive
+        return false;
+      case 'wave':
+        return this._applyCloth(s, motion, t, intensity);
+      case 'flow_field':
+        return this._applyFluid(s, motion, t, intensity);
+      case 'flock_drift':
+        return this._applyFlock(s, motion, t, intensity);
+      case 'path_travel':
+        // a motion WITH points was already handled above; a rigid_path swatch whose
+        // tracker found nothing has no travel to apply, so let the default sway run
+        return false;
+      case 'oscillate':
+      default:
+        return false;    // the parametric tail of _applyAll IS the oscillate applicator
+    }
+  }
+
+  /* Captured trajectory field for this motion, cached per selection. */
+  _fieldFor(s, motion) {
+    if (s._field === undefined || s._fieldMotion !== motion.id) {
+      s._field = buildTrajField(motion) || null;
+      s._fieldMotion = motion.id;
+    }
+    return s._field;
+  }
+
+  /*
+   * cloth → `wave`. A soft sheet rippling while anchored at one edge.
+   *
+   * Driven by the REAL captured field through the rigid MLS mesh warp
+   * (motionfields.js): the field is read at a coarse lattice and every path point is
+   * mapped by a smooth blend of those control displacements, so the deformation is
+   * continuous and neighbouring geometry cannot separate.
+   *
+   * That is what let the `/flag|banner|pennant|ensign|standard/` regex go. It existed
+   * because the old per-point fieldD() displaced each sample INDEPENDENTLY, mangling
+   * clean stripes (measured on flag.mp4: 27% median local shape distortion, 153% worst
+   * case), so flag-like names had to opt out of real motion and use a synthetic sine.
+   * The warp cuts that ~3x (9% median, 68% worst), which is what makes captured motion
+   * usable on a flag — no name needed, and no synthetic stand-in. It is a reduction,
+   * not an elimination: see the measurements above buildMeshWarp.
+   *
+   * anchor 'x0' pins the leading edge and ramps displacement across the width (the
+   * pole end holds, the free edge whips), matching the synthetic wave's ramp so the
+   * two agree on where a sheet is held. The synthetic sine remains for motions with
+   * no field at all — the presets.
+   */
+  _applyCloth(s, motion, t, intensity) {
+    if (!s._wave) s._wave = buildWaveData(s.wrap);
+    if (!s._wave) return false;                     // nothing sampleable to deform
+    const wv = s._wave;
+    const width = Math.max(1, wv.maxX - wv.minX);
+    const height = Math.max(1, wv.maxY - wv.minY);
+    const field = this._fieldFor(s, motion);
+
+    if (field) {
+      if (!s._mesh || s._meshMotion !== motion.id || s._meshAnchor !== 'x0') {
+        s._mesh = buildMeshWarp(field, wv, { anchor: 'x0' });
+        s._meshMotion = motion.id;
+        s._meshAnchor = 'x0';
+      }
+      if (s._mesh) {
+        for (const pd of wv.paths) {
+          // fine detail (an emblem): ride the cloth rigidly, keep its geometry crisp
+          if (pd.detail) detailRideMesh(pd, s._mesh, t, intensity);
+          else pd.el.setAttribute('d', meshD(pd, s._mesh, t, intensity));
+        }
+        s.wrap.setAttribute('transform', '');
+        return true;
+      }
+    }
+
+    // no captured field (preset) → coherent synthetic traveling sine
+    const p = motion.params;
+    const A = WAVE_AMP_PX * (0.35 + p.amplitude) * intensity;
+    const k = 2 * Math.PI * WAVE_CYCLES * (0.5 + p.phaseSpread) / width;
+    const phase = 2 * Math.PI * p.frequency * t;
+    const turb = p.turbulence * 4 * intensity;
+    for (const pd of wv.paths) {
+      if (pd.detail) {
+        const ramp = Math.pow((pd.cx - wv.minX) / width, 1.15);
+        const arg = phase - k * (pd.cx - wv.minX);
+        const dyv = A * ramp * Math.sin(arg) + turb * ramp * _noise(pd.cx * 0.11 + phase * 1.3);
+        const dxv = A * 0.22 * ramp * Math.cos(arg);
+        pd.el.setAttribute('transform', `translate(${dxv.toFixed(2)} ${dyv.toFixed(2)})`);
+      } else {
+        pd.el.setAttribute('d', waveD(pd, wv.minX, width, A, k, phase, turb));
+      }
+    }
+    s.wrap.setAttribute('transform', '');
+    return true;
+  }
+
+  /*
+   * fluid → `flow_field`. A continuous medium: water, smoke, steam, fire.
+   *
+   * Same mesh warp as cloth but anchor 'none' — a river surface is pinned to nothing,
+   * so the whole lattice is free and the sheet flows rather than whipping from an
+   * edge. With no captured field it falls back to _applyRiver's synthetic laminar
+   * wave, which is what the Water Ripple preset has always used.
+   */
+  _applyFluid(s, motion, t, intensity) {
+    if (!s._wave) s._wave = buildWaveData(s.wrap);
+    const field = s._wave ? this._fieldFor(s, motion) : null;
+    if (!field) {
+      if (!s._wave) return false;
+      this._applyRiver(s, motion, t, intensity);
+      return true;
+    }
+    if (!s._mesh || s._meshMotion !== motion.id || s._meshAnchor !== 'none') {
+      s._mesh = buildMeshWarp(field, s._wave, { anchor: 'none' });
+      s._meshMotion = motion.id;
+      s._meshAnchor = 'none';
+    }
+    if (!s._mesh) return false;
+    for (const pd of s._wave.paths) {
+      if (pd.detail) detailRideMesh(pd, s._mesh, t, intensity);
+      else pd.el.setAttribute('d', meshD(pd, s._mesh, t, intensity));
+    }
+    s.wrap.setAttribute('transform', '');
+    return true;
+  }
+
+  /*
+   * flock → `flock_drift`. Many similar things drifting together: birds, leaves,
+   * fish, a crowd. Each CHILD element moves on its own so the group spreads and
+   * desynchronizes instead of sliding as one rigid block.
+   *
+   * Everything directional comes from the captured params — `direction` sets the
+   * common heading (degrees, screen y-down as in computeMotion), `driftX/driftY` add
+   * the measured steady travel, `frequency` the wobble rate, `turbulence` how much
+   * each member wanders off the common heading. Nothing here knows what a bird is;
+   * _applyBirds keeps the wingbeat curation for the presets.
+   *
+   * Travel is bounded per member by ITS OWN on-canvas room and eased out-and-back
+   * ((1-cos)/2 never changes sign), so a member drifts along the heading and returns
+   * without any of them leaving the artwork or reversing into the flock.
+   */
+  _applyFlock(s, motion, t, intensity) {
+    const wrap = s.wrap;
+    const p = motion.params || {};
+    if (!s._flock || s._flockMotion !== motion.id) {
+      const kids = [...wrap.querySelectorAll('path')];
+      if (kids.length < 2) return false;            // one path is not a flock
+      const svg = wrap.ownerSVGElement;
+      const vb = (svg && svg.viewBox && svg.viewBox.baseVal) || null;
+      const vbW = (vb && vb.width) || 1121.71, vbH = (vb && vb.height) || 1121.73;
+      const MARGIN = 8, REACH = 55;                 // desired travel, room-clamped below
+      // common heading from the captured direction, plus the measured steady drift
+      const th = (p.direction || 0) * Math.PI / 180;
+      let hx = Math.cos(th), hy = -Math.sin(th);
+      const dxv = p.driftX || 0, dyv = p.driftY || 0;
+      if (dxv || dyv) {
+        const dl = Math.hypot(dxv, dyv);
+        hx = (hx + dxv / dl) / 2; hy = (hy + dyv / dl) / 2;
+        const hl = Math.hypot(hx, hy) || 1;
+        hx /= hl; hy /= hl;
+      }
+      s._flock = kids.map((el, i) => {
+        const b = el.getBBox();
+        // room in the direction THIS member is heading (both axes must allow it)
+        const roomX = hx >= 0 ? Math.max(0, vbW - (b.x + b.width) - MARGIN)
+                              : Math.max(0, b.x - MARGIN);
+        const roomY = hy >= 0 ? Math.max(0, vbH - (b.y + b.height) - MARGIN)
+                              : Math.max(0, b.y - MARGIN);
+        const reach = Math.min(REACH,
+          Math.abs(hx) > 1e-3 ? roomX / Math.abs(hx) : Infinity,
+          Math.abs(hy) > 1e-3 ? roomY / Math.abs(hy) : Infinity);
+        return {
+          el, hx, hy,
+          reach: reach * (0.7 + this._leafRnd(i, 4) * 0.3),   // per-member variety
+          driftF: 0.05 + this._leafRnd(i, 7) * 0.05,
+          driftPh: this._leafRnd(i, 8) * Math.PI * 2,
+          wobF: 0.15 + this._leafRnd(i, 6) * 0.18,
+          wobPh: this._leafRnd(i, 0) * Math.PI * 2,
+          wobDir: this._leafRnd(i, 9) * Math.PI * 2,
+        };
+      });
+      s._flockMotion = motion.id;
+    }
+    const wob = (p.turbulence || 0) * TURB_PX * intensity;
+    const freq = 0.5 + (p.frequency || 1) * 0.5;
+    for (const fd of s._flock) {
+      const ramp = (1 - Math.cos(2 * Math.PI * fd.driftF * freq * t + fd.driftPh)) / 2;
+      // hard cap at the member's room: the Intensity slider goes to 2x, and the
+      // room-fit alone would let it push members off the canvas
+      const travel = Math.min(fd.reach, fd.reach * intensity * ramp);
+      // wander perpendicular AND along, at the member's own phase, so the flock
+      // loosens as it drifts instead of holding formation
+      const w = wob * Math.sin(2 * Math.PI * fd.wobF * freq * t + fd.wobPh);
+      const dx = fd.hx * travel + Math.cos(fd.wobDir) * w;
+      const dy = fd.hy * travel + Math.sin(fd.wobDir) * w;
+      fd.el.setAttribute('transform', `translate(${dx.toFixed(2)} ${dy.toFixed(2)})`);
+    }
+    wrap.setAttribute('transform', '');
+    return true;
+  }
 
   /*
    * Tree canopy: preserve the detailed silhouettes and sway the overlay around
@@ -505,7 +733,8 @@ class Animator {
    */
   _applyPathTravel(s, motion, t, intensity) {
     const wrap = s.wrap;
-    const P = motion.path;
+    const P = this._pathFor(motion);
+    if (!P) return false;
     if (!s._path || s._pathMotion !== motion.id) {
       const svg = wrap.ownerSVGElement;
       const vb = (svg && svg.viewBox && svg.viewBox.baseVal) || { width: 1121.71, height: 1121.73 };
@@ -574,14 +803,15 @@ class Animator {
     if (!s._char || s._charMotion !== motion.id) {
       const q = r => wrap.querySelector(`[data-role="${r}"]`);
       const rigEl = wrap.querySelector('[data-leg], [data-char-mode]');
-      const frames = motion.pose.frames.filter(Boolean);
-      const jn = {}; motion.pose.joints.forEach((n, i) => jn[n] = i);
+      const pose = this._poseFor(motion);
+      const frames = pose.frames.filter(Boolean);
+      const jn = {}; pose.joints.forEach((n, i) => jn[n] = i);
       // mean hip / nose Y to centre the vertical bob
       let sh = 0, sn = 0;
       for (const f of frames) { sh += (f[jn.l_hip][1] + f[jn.r_hip][1]) / 2; sn += f[jn.nose][1]; }
       let bb; try { bb = wrap.getBBox(); } catch (_) { bb = { x: 0, y: 0, width: 1, height: 1 }; }
       s._char = {
-        frames, jn, fps: motion.pose.fps || 15,
+        frames, jn, fps: pose.fps || 15,
         meanHipY: sh / frames.length, meanNoseY: sn / frames.length,
         leg: parseFloat(rigEl && rigEl.getAttribute('data-leg')) || 150,
         // whole-body puppet mode when the artwork can't be split into limbs
@@ -668,6 +898,9 @@ class Animator {
       }
       if (s._birds) { for (const bd of s._birds) { bd.el.removeAttribute('transform'); bd.el.style.opacity = ''; } s._birds = null; s._birdsMotion = null; }
       if (s._clouds) { for (const cd of s._clouds) cd.el.removeAttribute('transform'); s._clouds = null; s._cloudsMotion = null; }
+      // Step 8 flock: room was measured from each member's bbox, so it must be
+      // re-measured on the next play rather than reused after the artwork moved
+      if (s._flock) { for (const fd of s._flock) fd.el.removeAttribute('transform'); s._flock = null; s._flockMotion = null; }
       if (s.kind === 'svg' && s.wrap) {
         s.wrap.setAttribute('transform', '');
         // restore pristine geometry for wave-deformed paths, and clear any
@@ -682,6 +915,9 @@ class Animator {
         s._path = null; s._pathMotion = null;     // Step 5 travel path (room is re-measured)
         s._field = undefined;
         s._fieldMotion = null;
+        // Step 8 mesh warp: its lattice is anchored to the object's bbox, which the
+        // restored geometry above has just changed back
+        s._mesh = null; s._meshMotion = null; s._meshAnchor = null;
         // reset per-glyph transforms (glyph split itself is kept — harmless)
         if (s._text) {
           for (const it of s._text.items) it.el.removeAttribute('transform');

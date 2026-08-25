@@ -71,6 +71,23 @@ def applicator_for(motion_class):
     return (MOTION_CLASSES.get(motion_class) or {}).get("applicator")
 
 
+# Every applicator the taxonomy names, derived from the table so the two can't drift.
+APPLICATORS = tuple(dict.fromkeys(r["applicator"] for r in MOTION_CLASSES.values()))
+
+# What each applicator READS (Step 8). An applicator can only run on a swatch whose
+# `kind` supplies its payload — a rig needs joints, path_travel needs points, the field
+# applicators need a flow field. This table is why routing takes (kind, class) and not
+# class alone, and it is what validate_swatch() checks the two against.
+APPLICATOR_NEEDS = {
+    "skeletal": "skeleton",       # pose payload: named joints per frame
+    "wave": "texture",            # flow field, applied as coherent cloth deformation
+    "flow_field": "texture",      # flow field, applied as laminar surface flow
+    "flock_drift": "texture",     # flow field, applied per child element
+    "path_travel": "path",        # travel path: [frame, dx, dy] offsets
+    "oscillate": "texture",       # params only — the in-place whole-object default
+}
+
+
 # ── Contract A: decomposition (VLM Router output) ──────────────────────────
 def empty_decomposition(clip=None):
     return {"version": SCHEMA_VERSION, "clip": clip or {}, "static": True, "motions": []}
@@ -352,12 +369,12 @@ def normalize_skeleton_swatch(raw):
 # An applicator reads the core plus only the payload its kind owns, so adding a
 # backend never changes this shape — the whole point of Step 0's registry.
 #
-# `class` and `kind` are NOT the same axis and Step 8 must branch on both. One clip can
-# yield two swatches with the SAME class and different kinds: a rigid_path boat gives a
-# `path` swatch (where the boat goes) AND a `texture` swatch (its internal motion, from the
-# flow field). Routing on class alone would send that texture swatch to the path_travel
-# applicator, which has no path to follow. class = what the motion IS; kind = what shape of
-# data this swatch carries.
+# `class` and `kind` are NOT the same axis, and routing branches on both — see
+# swatch_applicator() below. One clip can yield two swatches with the SAME class and
+# different kinds: a rigid_path boat gives a `path` swatch (where the boat goes) AND a
+# `texture` swatch (its internal motion, from the flow field). Routing on class alone would
+# send that texture swatch to the path_travel applicator, which has no path to follow.
+# class = what the motion IS; kind = what shape of data this swatch carries.
 SWATCH_KINDS = ("texture", "skeleton", "path")
 
 # What the single `confidence` scalar MEANS per kind. As with skeletons, one 0..1
@@ -368,6 +385,28 @@ SWATCH_CONFIDENCE_OF = {
     "skeleton": "",                        # taken from the nested pose payload
     "path": "tracked_fraction",            # fraction of the clip the object was tracked for
 }
+
+
+def swatch_applicator(kind, cls):
+    """Which applicator can actually DRIVE this swatch — a function of (kind, class).
+
+    `class` is what the motion IS; `kind` is what shape of data this swatch carries, and
+    an applicator can only run on the shape it reads (APPLICATOR_NEEDS). So kind decides
+    what is POSSIBLE and class only picks among the applicators that read that kind.
+
+    The case this exists for: one rigid_path clip emits two swatches. The `path` one
+    carries the travel, the `texture` one the object's internal motion. `rigid_path` ->
+    path_travel is right for the first and wrong for the second — that texture swatch has
+    no path — so the texture falls back to the applicator that always reads a flow field.
+    Same for an `articulated` texture swatch: no joints, so it cannot drive a rig.
+    """
+    if kind not in SWATCH_KINDS:
+        return ""
+    app = applicator_for(cls) or ""
+    if APPLICATOR_NEEDS.get(app) == kind:
+        return app
+    # unclassified, or the class's applicator reads a payload this swatch doesn't carry
+    return {"skeleton": "skeletal", "path": "path_travel", "texture": "oscillate"}[kind]
 
 # The 6 renderer dials + the 2 drift terms distill() emits. Frozen: the applicator
 # reads these names directly (js/animate.js), so they may be added to, never renamed.
@@ -393,10 +432,15 @@ TRACK_COORD_DP = 3         # 3dp of a normalized coord ≈ 0.5px on a 480px anal
 
 def empty_swatch(kind="texture", cls="", engine=""):
     kind = kind if kind in SWATCH_KINDS else "texture"
+    cls = cls if cls in MOTION_CLASSES else ""
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": kind,
-        "class": cls if cls in MOTION_CLASSES else "",
+        "class": cls,
+        # (Step 8) which applicator this swatch can drive. Carried IN the swatch so the
+        # taxonomy stays in this one file — the renderer maps applicator -> method and
+        # never has to know the class list, so adding a class stays a one-file change.
+        "applicator": swatch_applicator(kind, cls),
         "engine": engine,
         "fps": 15.0,
         "frames": 0,                 # frames this swatch spans (after any stride)
@@ -504,6 +548,14 @@ def normalize_swatch(raw):
     out["confidence_of"] = str(raw.get("confidence_of", "")) or SWATCH_CONFIDENCE_OF[kind]
     if isinstance(raw.get("warnings"), list):
         out["warnings"] = [str(w) for w in raw["warnings"]]
+    # an applicator that reads a payload this kind doesn't carry is dropped, not honoured:
+    # obeying it would send the swatch to a method that has nothing to read (Step 8)
+    ra = str(raw.get("applicator", ""))
+    if ra and APPLICATOR_NEEDS.get(ra) != kind:
+        warnings.append(f"applicator {ra!r} reads a {APPLICATOR_NEEDS.get(ra)!r} payload "
+                        f"but this is a {kind} swatch; routed to {out['applicator']!r}")
+    elif ra:
+        out["applicator"] = ra
 
     if kind == "texture":
         p = raw.get("params") if isinstance(raw.get("params"), dict) else {}
@@ -548,6 +600,14 @@ def validate_swatch(sw):
         return False, e + [f"kind must be one of {SWATCH_KINDS}, got {kind!r}"]
     if sw.get("class") not in MOTION_CLASSES and sw.get("class") != "":
         e.append(f"class {sw.get('class')!r} is not a known motion class")
+    # (Step 8) the applicator must be able to READ this swatch. Checked here, at the
+    # contract boundary, so the class/kind mix-up can never reach the renderer.
+    app = sw.get("applicator")
+    if app not in APPLICATORS:
+        e.append(f"applicator must be one of {APPLICATORS}, got {app!r}")
+    elif APPLICATOR_NEEDS.get(app) != kind:
+        e.append(f"applicator {app!r} reads a {APPLICATOR_NEEDS.get(app)!r} payload "
+                 f"but this is a {kind!r} swatch")
     if not isinstance(sw.get("engine"), str):
         e.append("engine must be a string (name the extractor that produced this)")
     fps = sw.get("fps")

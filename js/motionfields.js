@@ -68,13 +68,21 @@ function computeMotion(params, seed, t, intensity = 1) {
  * buildTrajField(motion) → sampler(u, v, t) -> {dx, dy} in unit-square units
  */
 function buildTrajField(motion) {
-  const tracks = motion.trajectories;
+  // The raw field is preferred when it's here (it is strictly more samples), but a swatch
+  // is a complete standalone source: `tracks` + its own `fps` (already divided by the
+  // thinning stride) replay at the same speed, within the 2.11px-on-480px error measured
+  // in contracts.py. So a motion carrying only a Contract-B swatch animates identically.
+  let tracks = motion.trajectories, fps = motion.trajFps || 15;
+  if (!tracks || !tracks.length) {
+    const sw = (motion.swatches || []).find(s => s && s.kind === 'texture'
+                                                 && s.tracks && s.tracks.length);
+    if (sw) { tracks = sw.tracks; fps = sw.fps || fps; }
+  }
   if (!tracks || tracks.length < 4) return null;
   const G = Math.round(Math.sqrt(tracks.length));          // 12
   if (G * G !== tracks.length) return null;
   const T = tracks[0].length;
   if (T < 4) return null;
-  const fps = motion.trajFps || 15;
 
   // displacement-from-start per track
   const disp = tracks.map(tr => {
@@ -151,6 +159,141 @@ function buildTrajField(motion) {
   };
   sample.period = 2 * (T - 1) / fps;   // seconds per seamless ping-pong loop
   return sample;
+}
+
+/*
+ * ---- Mesh warp: rigid Moving Least Squares (Step 8) ----
+ * fieldD() below displaces every sampled point INDEPENDENTLY. The field is bilinear over a
+ * 12x12 grid, so two neighbouring points that straddle a cell boundary can be pulled apart
+ * by most of a cell — on clean geometric artwork (a flag's stripes) that shear reads as
+ * TEARING, which is why cloth had to opt out of real motion and use a synthetic sine.
+ *
+ * Instead: sample the field at a COARSE lattice of control points and map every path point
+ * with Moving Least Squares using RIGID transforms (Schaefer, McPhail & Warren 2006,
+ * "Image Deformation Using Moving Least Squares", §rigid). Each point's displacement is a
+ * smooth weighted blend of the control displacements, and each local map is as close to a
+ * rotation + translation as the control positions allow.
+ *
+ * MEASURED, on the real flag.mp4 field (16 time samples, 4px patches, distortion =
+ * how far a patch's corners land from the nearest pure rotation+translation of it,
+ * as a % of the patch size — i.e. how much the shape was sheared rather than moved):
+ *
+ *              per-point fieldD          rigid MLS mesh warp
+ *   median          27.3%                       9.4%
+ *   p95             86.8%                      33.1%          <- 3x better
+ *   max            153%                        67.5%
+ *
+ * fieldD's 153% means a patch's corners end up further from their rigid position than the
+ * patch is WIDE — that is the stripe-mangling cloth had to opt out of. So this is a large
+ * improvement, but note what it is NOT: "as-rigid-as-possible" is not rigid, and a coarse
+ * lattice over a chaotic field still stretches a patch by tens of percent. The guarantee
+ * the warp does give is continuity — it is a smooth function of position, so neighbouring
+ * geometry stays neighbouring and cannot separate outright.
+ *
+ * It is still the real captured field driving it — the lattice is where the field is read,
+ * not a replacement for it.
+ *
+ * anchor:'x0' pins the lattice's leading (minX) column and ramps displacement across the
+ * width — cloth on a pole stays pinned (measured: pole edge 1.3px, free edge 24.3px) and
+ * whips at the free edge. Same ramp exponent as the synthetic wave, so the two agree on
+ * where a flag is held. 'none' leaves the whole lattice free (a river surface is not
+ * pinned to anything).
+ */
+// Lattice density is a distortion/detail trade, and it costs NOTHING in motion: the
+// free-edge whip measured 24.3px at every setting below, only the distortion moved.
+//   3x3 -> p95 29.2%   4x3 -> 30.3%   5x4 -> 33.1%   6x5 -> 39.1%   12x12 -> 47.7%
+// 5x4 keeps more of the field's real spatial structure (a flag has more than one fold
+// across its width) for 4 points of p95 over the flattest option.
+const MLS_LATTICE = [5, 4];      // control points across x, y — coarse on purpose
+const MLS_ALPHA = 1.0;           // weight falloff: w = 1/|p-v|^(2*alpha)
+const MLS_EPS = 1e-9;
+
+function buildMeshWarp(field, box, opts) {
+  if (typeof field !== 'function') return null;
+  const o = opts || {};
+  const NX = (o.lattice || MLS_LATTICE)[0], NY = (o.lattice || MLS_LATTICE)[1];
+  const w = Math.max(1, box.maxX - box.minX), h = Math.max(1, box.maxY - box.minY);
+  const anchor = o.anchor || 'none';
+  const px = [], py = [], pu = [], pv = [], ramp = [];
+  for (let j = 0; j < NY; j++) {
+    for (let i = 0; i < NX; i++) {
+      const u = NX > 1 ? i / (NX - 1) : 0.5, v = NY > 1 ? j / (NY - 1) : 0.5;
+      px.push(box.minX + u * w); py.push(box.minY + v * h);
+      pu.push(u); pv.push(v);
+      ramp.push(anchor === 'x0' ? Math.pow(u, 1.15) : 1);
+    }
+  }
+  const N = px.length;
+  const qx = new Float64Array(N), qy = new Float64Array(N), ws = new Float64Array(N);
+  let atT = NaN, atI = NaN;
+  const place = (t, intensity) => {
+    if (t === atT && intensity === atI) return;
+    for (let i = 0; i < N; i++) {
+      const s = field(pu[i], pv[i], t);
+      qx[i] = px[i] + s.dx * w * 0.5 * intensity * ramp[i];
+      qy[i] = py[i] + s.dy * h * 0.5 * intensity * ramp[i];
+    }
+    atT = t; atI = intensity;
+  };
+
+  /* (x,y,t,intensity) -> {x, y, rot} — rot is the local rotation in degrees, which a
+     detail path can ride so an emblem turns with the cloth instead of only sliding. */
+  const warp = function warp(x, y, t, intensity = 1) {
+    place(t, intensity);
+    let sw = 0, pcx = 0, pcy = 0, qcx = 0, qcy = 0;
+    for (let i = 0; i < N; i++) {
+      const ax = px[i] - x, ay = py[i] - y;
+      const d2 = ax * ax + ay * ay;
+      // MLS interpolates its control points exactly; at one the weight is infinite
+      if (d2 < MLS_EPS) return { x: qx[i], y: qy[i], rot: 0 };
+      const wi = 1 / Math.pow(d2, MLS_ALPHA);
+      ws[i] = wi; sw += wi;
+      pcx += wi * px[i]; pcy += wi * py[i];
+      qcx += wi * qx[i]; qcy += wi * qy[i];
+    }
+    pcx /= sw; pcy /= sw; qcx /= sw; qcy /= sw;
+    const vx = x - pcx, vy = y - pcy;
+    // f_r(v) = |v-p*| * normalize( SUM q^_i * A_i ) + q*,  A_i = w_i * [[p^_i],[-p^_i|]] . [[v-p*],[-(v-p*)|]]^T
+    // which reduces to the 2x2 rotation-scale [[a,b],[-b,a]] below (|  = perpendicular)
+    let fx = 0, fy = 0;
+    for (let i = 0; i < N; i++) {
+      const ax = px[i] - pcx, ay = py[i] - pcy;
+      const bx = qx[i] - qcx, by = qy[i] - qcy;
+      const a = ws[i] * (ax * vx + ay * vy);
+      const b = ws[i] * (ax * vy - ay * vx);
+      fx += bx * a - by * b;
+      fy += bx * b + by * a;
+    }
+    const fl = Math.hypot(fx, fy), vl = Math.hypot(vx, vy);
+    if (fl < MLS_EPS || vl < MLS_EPS) return { x: qcx + vx, y: qcy + vy, rot: 0 };
+    let rot = Math.atan2(fy, fx) - Math.atan2(vy, vx);
+    while (rot > Math.PI) rot -= 2 * Math.PI;
+    while (rot < -Math.PI) rot += 2 * Math.PI;
+    const k = vl / fl;
+    return { x: qcx + fx * k, y: qcy + fy * k, rot: rot * 180 / Math.PI };
+  };
+  warp.controls = N;
+  warp.anchor = anchor;
+  return warp;
+}
+
+/* One frame of MESH-WARPED deformation for a sampled path (the tear-free fieldD). */
+function meshD(pd, warp, t, intensity) {
+  let d = '';
+  for (let i = 0; i < pd.pts.length; i++) {
+    const p = warp(pd.pts[i][0], pd.pts[i][1], t, intensity);
+    d += (i ? 'L' : 'M') + p.x.toFixed(2) + ',' + p.y.toFixed(2);
+  }
+  return pd.closed ? d + 'Z' : d;
+}
+
+/* Ride the mesh warp with crisp geometry: translate AND rotate a detail path by the
+   warp's local rigid transform at its center (the "ride, don't deform" rule). */
+function detailRideMesh(pd, warp, t, intensity) {
+  const p = warp(pd.cx, pd.cy, t, intensity);
+  pd.el.setAttribute('transform',
+    `translate(${(p.x - pd.cx).toFixed(2)} ${(p.y - pd.cy).toFixed(2)}) `
+    + `rotate(${p.rot.toFixed(2)} ${pd.cx.toFixed(1)} ${pd.cy.toFixed(1)})`);
 }
 
 /* One frame of trajectory-field deformation for a sampled path. */

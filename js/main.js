@@ -225,6 +225,9 @@ function applyMotionToActive() {
     if (s._leaves) { for (const lf of s._leaves) { lf.el.removeAttribute('transform'); lf.el.style.opacity = ''; } s._leaves = null; }
     s._wave = null; s._field = undefined; s._fieldMotion = null; s._text = undefined;
     s._char = null; s._charMotion = null;
+    // Step 8 applicators cache per-motion state (mesh lattice, per-member flock room)
+    s._mesh = null; s._meshMotion = null; s._meshAnchor = null;
+    s._flock = null; s._flockMotion = null;
     showInspector(s);
     if (sel.mode === 'svg') sel._renderSVGHighlights(); else sel.redraw();
     return s.name;

@@ -210,9 +210,10 @@ stops.
 
 **Not shipped:** the client still sends BOTH shapes — `params`/`trajectories`/`path` (what
 `js/animate.js` reads today) *and* `swatches` — so a `?swatch=1` response is ~40% larger than
-it needs to be. That duplication is Step 8's to remove, once the applicator reads
-`swatch.class` + `swatch.kind` instead of the raw fields; the swatch is metadata-only until
-then. The in-browser Lucas–Kanade fallback returns `swatches: []` rather than a
+it needs to be. Step 8 made the applicator read
+`swatch.class` + `swatch.kind` (and all three payloads) instead of the raw fields, so the
+duplication is now *removable* — but the fields are still on the wire because the extraction
+overlay, multi-motion picking and library summaries read them (see Step 8's "Not shipped"). The in-browser Lucas–Kanade fallback returns `swatches: []` rather than a
 client-built swatch: the builders live in `contracts.py` as the single source of truth, and
 that fallback runs exactly when that service is unreachable. `normalize_swatch` also fills
 missing scalars with 0 and records the guess in `warnings` — it will not invent motion (a
@@ -233,6 +234,73 @@ rig, flat character→puppet (have it), object→path travel. Retire the `/\bfla
 - *Object leaves the canvas (river slide, cloud drift).* → Bound travel to the object's on-canvas room (already implemented for clouds/birds).
 
 **Done-when:** the correct behavior fires from the class even if the layer is renamed; large deformation doesn't tear.
+
+**Status (shipped):** dispatch is keyed on the swatch, in two places that must agree.
+`service/contracts.py` gains `APPLICATOR_NEEDS` (which payload each applicator can read) and
+`swatch_applicator(kind, cls)`, so every swatch carries the applicator the *service* resolved;
+`js/animate.js` gains `APPLICATOR_BY_CLASS` + `_applicatorFor()`, which prefers that field and
+falls back to the class. The routing takes **both axes** — one `rigid_path` clip emits a `path`
+swatch *and* a `texture` swatch, and only the first can drive `path_travel`, so class alone
+would hand the texture to an applicator with no path. Verified on the live services:
+`boat.mp4?path=1&swatch=1` returns `path/rigid_path → path_travel` **and**
+`texture/rigid_path → oscillate` from the same clip.
+
+The four name regexes (`birds` / `clouds` / `river|ripples` / `boat|rowboat|canoe|ferry|ship`)
+and the cloth `/flag|banner|pennant|ensign|standard/` regex are now **preset-only fallback**,
+gated behind `if (!app)`: a classified swatch never reaches them, so real extracted motion
+always wins even where the curated version looks nicer. A swatch with an **empty** class is
+skipped deliberately — `swatch_applicator` still fills a payload-appropriate default
+(`oscillate` for a texture), but that is a shape default, not a classification, and treating
+it as one would retire the curated behaviour on the strength of a guess. Driving the real
+`_applyAll` over real `?swatch=1` payloads with the layer deliberately misnamed:
+flag.mp4→`cloth` on layers *Flag/Birds/River/Boat/Layer 7* all route to `_applyCloth`;
+birds.mp4→`flock` to `_applyFlock` on all five; clouds/smoke→`fluid` to `_applyFluid`.
+
+Deformation is a **rigid Moving Least Squares mesh warp** (Schaefer, McPhail & Warren 2006,
+§rigid) over a 5×4 lattice sampled from the captured flow field, replacing the per-point
+`fieldD` resample that made cloth opt out of real motion. `anchor:'x0'` pins the minX column
+and ramps by `pow(u, 1.15)` (cloth on a pole); `anchor:'none'` pins nothing (a river surface
+is held by nothing). Measured on flag.mp4's real field, local shape distortion as a % of a
+4 px patch (Procrustes residual after best-fit rotation): per-point `fieldD` p50 27.3 / p95
+86.8 / max 153; **rigid MLS p50 9.4 / p95 33.1 / max 67** — 2.6× better at p95. 1 px-apart
+neighbours stay 1.76 px apart (vs 2.73 px), the lattice never folds (worst 0.0% of a cell),
+a zero field leaves the artwork within 2.5e-14 px, and detail paths get a real 7.06° rotation
+to ride rather than a slide.
+
+Flock drift now reads the captured params instead of bird constants: `direction` 0 → +x
+(52.1 px), 90 → −y (52.1 px), members never reverse into the flock (min dx 0.000), and
+`turbulence` measurably loosens the formation (spread 25.9 → 35.7). Travel stays bounded by
+each member's own on-canvas room.
+
+`js/animate.js` also reads all three payloads **from the swatch alone** now
+(`buildTrajField`'s texture fallback, `_poseFor`, `_pathFor`), which is what Step 7's
+"Not shipped" note was waiting for. Confirmed against real service output with the legacy
+top-level fields stripped: cloth→`_applyCloth`, flock→`_applyFlock`, path→`_applyPathTravel`,
+and the real MediaPipe skeleton swatch (155/155 frames) drives the rig on rigged artwork and
+declines on unrigged artwork.
+
+**Verified**, not asserted: `tests/step8-applicators.js` (node only, no browser and no
+service) drives the **real** `Animator._applyAll` with the applicator methods replaced by
+spies and a stubbed DOM, so a check passes only if the dispatch genuinely routes on class.
+47 checks across routing-by-class-not-name, two-axis `(kind, class)` routing, preset-only
+fallback, honest capability fall-through, JS-table-mirrors-`contracts.py` (parsed out of the
+`.py`), the mesh-warp properties above, and the flock params. Pass an `/analyze?swatch=1`
+response as `argv[2]` to run the mesh measurements on a real field instead of a synthetic one.
+`service/contracts_selftest.py` is now 65 checks, including the negative cases (*a
+`rigid_path` texture swatch does NOT get `path_travel`*, *an articulated texture swatch does
+NOT get the rig*). The **no-query `/analyze` response and `?fmt=legacy` on :8770 are still
+byte-identical** — `applicator` appears only inside a `?swatch=1` swatch.
+
+**Not shipped:** the wire payload is still duplicated. The applicator no longer *needs* the
+legacy `trajectories`/`path`/`pose` fields, but `js/extractviz.js`, `js/multipick.js` and
+`js/main.js` still read them (extraction overlay, multi-motion picking, library summaries), so
+dropping them from the response is a separate change with its own blast radius. `skeletal`
+inside `_applyByClass` is a `return false`: the rig branch runs earlier in `_applyAll` because
+it needs the pose payload as well as the class, so reaching the switch means the artwork has
+no rig. The mesh warp is **as-rigid-as-possible, not rigid** — 33% p95 residual is a
+reduction, not an elimination, and at amplitudes far above what distill reports (≈0.9
+normalized, ~1.8× the lattice spacing) the lattice folds and the warp tears. Real captured
+amplitudes are 0.02–0.1, which is the range the numbers above were measured in.
 
 ---
 

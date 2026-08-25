@@ -123,7 +123,46 @@ def main():
           nc["confidence"] == 0.0 and "unknown" in nc["confidence_of"])
     expect_valid("...and still validates", nc)
 
+    print("\n(Step 8) routing takes BOTH axes — kind decides what is possible, class picks:")
+    check("texture/flock -> flock_drift", tex["applicator"] == "flock_drift")
+    check("path/rigid_path -> path_travel", pth["applicator"] == "path_travel")
+    check("skeleton/articulated -> skeletal", skl["applicator"] == "skeletal")
+    check("cloth texture -> wave",
+          C.swatch_applicator("texture", "cloth") == "wave")
+    check("fluid texture -> flow_field",
+          C.swatch_applicator("texture", "fluid") == "flow_field")
+    check("oscillation texture -> oscillate",
+          C.swatch_applicator("texture", "oscillation") == "oscillate")
+    # the whole reason routing can't use class alone: the SECOND swatch of a boat clip
+    tex_rp = C.texture_swatch(PARAMS, TRACKS, 30.0, cls="rigid_path", engine="raft_small")
+    check("a rigid_path TEXTURE swatch does NOT go to path_travel — it has no path",
+          tex_rp["applicator"] == "oscillate" and tex_rp["class"] == "rigid_path",
+          tex_rp["applicator"])
+    expect_valid("...and it validates as a texture swatch", tex_rp)
+    tex_ar = C.texture_swatch(PARAMS, TRACKS, 30.0, cls="articulated", engine="raft_small")
+    check("an articulated TEXTURE swatch does NOT go to the rig — it has no joints",
+          tex_ar["applicator"] == "oscillate", tex_ar["applicator"])
+    check("an unclassified texture still routes somewhere honest",
+          C.texture_swatch(PARAMS, TRACKS, 30.0)["applicator"] == "oscillate")
+    check("every applicator in the taxonomy declares what payload it reads",
+          set(C.APPLICATORS) <= set(C.APPLICATOR_NEEDS)
+          and all(v in C.SWATCH_KINDS for v in C.APPLICATOR_NEEDS.values()),
+          f"{C.APPLICATORS} vs {C.APPLICATOR_NEEDS}")
+    check("every class routes to an applicator that can read the class's own backend kind",
+          all(C.swatch_applicator(k, c) in C.APPLICATORS
+              for c in C.MOTION_CLASSES for k in C.SWATCH_KINDS))
+
     print("\nNEGATIVE — the validator has to reject these:")
+    expect_invalid("path_travel on a texture swatch (the class/kind mix-up)",
+                   dict(tex, applicator="path_travel"), "reads a 'path' payload")
+    expect_invalid("skeletal on a texture swatch", dict(tex, applicator="skeletal"),
+                   "reads a 'skeleton' payload")
+    expect_invalid("flock_drift on a path swatch", dict(pth, applicator="flock_drift"),
+                   "reads a 'texture' payload")
+    expect_invalid("an applicator that doesn't exist", dict(tex, applicator="interpretive"),
+                   "applicator must be one of")
+    expect_invalid("no applicator at all", dict(tex, applicator=None),
+                   "applicator must be one of")
     expect_invalid("no kind", dict(tex, kind="vibes"), "kind must be one of")
     expect_invalid("wrong schema_version", dict(tex, schema_version=99), "schema_version")
     expect_invalid("texture with no tracks", dict(tex, tracks=[]), "non-empty tracks")
@@ -169,6 +208,13 @@ def main():
     n3, w3 = C.normalize_swatch({"kind": "interpretive_dance"})
     check("an unknown kind is reported, not guessed at",
           n3["kind"] == "texture" and any("unknown swatch kind" in w for w in w3), str(w3))
+    n5, w5 = C.normalize_swatch(dict(tex, applicator="path_travel"))
+    check("a claimed applicator this kind can't feed is dropped, not obeyed",
+          n5["applicator"] == "flock_drift"
+          and any("routed to" in w for w in n5["warnings"]), str(w5))
+    n6, _ = C.normalize_swatch(dict(tex, applicator="wave"))
+    check("...but a legitimate override for the same kind is honoured",
+          n6["applicator"] == "wave")
     n4, _ = C.normalize_swatch(C.path_swatch(PATH, engine="yolo_bytetrack"))
     expect_valid("normalize(build(x)) round-trips a real swatch", n4)
     check("...and is unchanged by the round-trip",
