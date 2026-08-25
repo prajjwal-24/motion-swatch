@@ -77,6 +77,22 @@ function selectMotion(id) {
                  : `Motion "${m.name}" selected — now click an object to apply it.`, true);
 }
 
+// (Step 7) One line per swatch, read from the UNIFIED Contract-B core — so a texture, a
+// skeleton and a path describe themselves in exactly the same terms in the library instead
+// of each backend inventing its own wording. Only the core is read here (kind, class,
+// engine, frames, fps, confidence + what that confidence MEANS); the kind-specific payload
+// is the applicator's business. Motions without swatches (presets, the in-browser
+// Lucas–Kanade fallback) keep their own `desc` — an empty list is honest, not a gap to fill.
+function swatchSummary(m) {
+  const sws = Array.isArray(m.swatches) ? m.swatches : [];
+  if (!sws.length) return m.desc || m.name;
+  return sws.map(s =>
+    `${s.kind} · ${s.class || 'unclassified'} · ${s.engine} · ${s.frames} frames @ ${s.fps}fps · `
+    + `confidence ${Math.round(s.confidence * 100)}% (${s.confidence_of})`
+    + (s.warnings && s.warnings.length ? `\n    ⚠ ${s.warnings.join('\n    ⚠ ')}` : '')
+  ).join('\n');
+}
+
 function makeChip(m, container) {
   const tile = document.createElement('div');
   tile.className = 'motion-chip' + (library.selectedId === m.id ? ' active' : '');
@@ -87,7 +103,7 @@ function makeChip(m, container) {
   label.textContent = m.name;
   tile.appendChild(canvas);
   tile.appendChild(label);
-  tile.title = m.desc || m.name;
+  tile.title = `${m.name}\n${swatchSummary(m)}`;
   tile.onclick = () => selectMotion(m.id);
   container.appendChild(tile);
   chipTiles.push({ canvas, ctx: canvas.getContext('2d'), motion: m, ...buildChipState(m) });

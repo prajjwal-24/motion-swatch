@@ -64,7 +64,12 @@ window.handleMotionUpload = async (e) => {
     $('upload-status').textContent = 'Extracting body motion with MediaPipe…' +
       (target && !rigged ? ` (${target.name} isn't rigged → whole-body puppet)` : '');
     try {
-      const pose = await capture.captureCharacter(file);
+      // (Step 7) fmt=swatch: one request gives BOTH the unified Contract-B swatch (for the
+      // library) and, nested under .pose, the same {joints,fps,frames,detected,total} the
+      // rig has always consumed. Verified byte-identical on walk-man.mp4; where they differ
+      // it is because fmt=swatch gap-fills frames the detector missed, which the rig wants.
+      const sw = await capture.captureCharacter(file, 'pose', 'swatch');
+      const pose = sw && (sw.pose || sw);          // tolerate a legacy response
       if (!pose || !pose.detected) {
         $('upload-status').textContent = 'No person detected — use a clear, full-body clip.';
         e.target.value = ''; return;
@@ -76,6 +81,7 @@ window.handleMotionUpload = async (e) => {
         pose: { joints: pose.joints, fps: pose.fps, frames: pose.frames.filter(Boolean) },
         params: { frequency: 1, amplitude: 0.2, direction: 0, turbulence: 0, damping: 0, phaseSpread: 0 },
         videoUrl, fromUpload: true, engine: 'mediapipe',
+        swatches: sw && sw.kind === 'skeleton' ? [sw] : [],
       };
       library.add(motion); videoRec.motionId = motion.id; renderMotionList();
       library.select(motion.id);
@@ -126,7 +132,9 @@ window.handleMotionUpload = async (e) => {
       const rt = await capture.route(m.class, { subject_type: m.subject_type, count: m.count });
       // preprocess:1 → object mask + camera motion, seeded by this motion's bbox
       // (the mask replaces the rectangular crop, so stats come from the object only)
-      const opts = { bbox: m.bbox, preprocess: 1 };
+      // cls: the VLM's class travels into the Contract-B swatch (Step 7) so Step 8's
+      // applicator can route on it instead of on the layer's name.
+      const opts = { bbox: m.bbox, preprocess: 1, cls: m.class };
       if (rt && rt.available) {
         if (rt.kind === 'flow' && rt.engine !== 'raft_small') opts.engine = rt.engine;
         else if (rt.kind === 'trajectory') opts.tracker = rt.engine;
@@ -159,6 +167,7 @@ window.handleMotionUpload = async (e) => {
     // background stops diluting the swatch. Falls back to full-frame if no mask is found.
     routeOpts.bbox = routed.bbox;
     routeOpts.preprocess = 1;
+    routeOpts.cls = routed.class;      // (Step 7) carried into the swatch for Step 8
     const rt = await capture.route(routed.class, { subject_type: routed.subject_type, count: routed.count });
     if (rt && rt.engine && rt.available) {
       if (rt.kind === 'flow' && rt.engine !== 'raft_small') routeOpts.engine = rt.engine;

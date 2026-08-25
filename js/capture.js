@@ -74,11 +74,17 @@ class MotionCapture {
   /* Character / skeletal motion: POST the clip to the MediaPipe pose service,
      which returns a captured pose sequence (joints + per-frame keypoints).
      Returns {joints, fps, frames, detected, total} or null if unavailable. */
-  async captureCharacter(file, kind = 'pose') {
+  async captureCharacter(file, kind = 'pose', fmt = 'legacy') {
     // kind: 'pose' (default, byte-compatible response the rig consumes) | 'hands' | 'face'.
     // hands/face return a Contract-B skeleton swatch (subject!=='pose') and must NOT be
     // routed to the body rig (_applyCharacter) — see js/animate.js.
-    const qs = kind && kind !== 'pose' ? `?kind=${encodeURIComponent(kind)}` : '';
+    // fmt: 'legacy' (the frozen {joints,fps,frames,detected,total}) or 'swatch' (Step 7's
+    // unified swatch, with those same fields nested under .pose). Verified identical on
+    // walk-man.mp4 — fmt=swatch only differs by gap-filling frames the detector missed.
+    const q = [];
+    if (kind && kind !== 'pose') q.push('kind=' + encodeURIComponent(kind));
+    if (fmt && fmt !== 'legacy') q.push('fmt=' + encodeURIComponent(fmt));
+    const qs = q.length ? '?' + q.join('&') : '';
     try {
       const resp = await fetch(POSE_SERVICE_URL + '/extract' + qs, { method: 'POST', body: file });
       const j = await resp.json();
@@ -118,6 +124,12 @@ class MotionCapture {
         if (opts.bbox) qs.push('bbox=' + opts.bbox.map(v => (+v).toFixed(4)).join(','));
         if (opts.preprocess) qs.push('preprocess=1');   // Step 2: object mask + camera
         if (opts.path) qs.push('path=1');               // Step 5: object travel path
+        // (Step 7) always ask for the unified Contract-B swatches — the library reads
+        // its metadata from them, so a texture, a skeleton and a path all describe
+        // themselves the same way. `cls` is the VLM's class, carried into the swatch so
+        // Step 8 can route on it instead of on the layer name.
+        qs.push('swatch=1');
+        if (opts.cls) qs.push('cls=' + encodeURIComponent(opts.cls));
         const url = SERVICE_URL + '/analyze' + (qs.length ? '?' + qs.join('&') : '');
         const resp = await fetch(url, { method: 'POST', body: form });
         const j = await resp.json();
@@ -149,6 +161,12 @@ class MotionCapture {
             // travel:{…}, confidence}. Present => animate.js follows it instead of a
             // name-keyed curated behaviour. Absent whenever nothing was tracked.
             path: j.path || null,
+            // (Step 7) the SAME numbers as unified Contract-B swatches: one per backend
+            // that ran, primary first (a path swatch before the texture swatch that
+            // carries the object's internal motion). `params`/`trajectories`/`path` above
+            // are the raw shapes the renderer still reads — a deliberate duplication that
+            // Step 8 removes once the applicator branches on swatch.class + swatch.kind.
+            swatches: Array.isArray(j.swatches) ? j.swatches : [],
           };
           if (this.onComplete) this.onComplete(motion);
           return motion;
@@ -212,6 +230,10 @@ class MotionCapture {
             // keep the object URL alive: the library card shows the real
             // clip as a looping thumbnail
             videoUrl: url,
+            // no Contract-B swatch: the builders live in service/contracts.py (one source
+            // of truth), and this fallback runs precisely when that service is down.
+            // Empty, not faked — the library falls back to `desc` for these.
+            swatches: [],
           };
           if (this.onComplete) this.onComplete(motion);
           resolve(motion);

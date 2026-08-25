@@ -304,7 +304,10 @@ def empty_skeleton_swatch(subject, engine=""):
 
 def normalize_skeleton_swatch(raw):
     """Validate/clamp a raw skeleton swatch into the frozen shape. Frame payloads
-    are kept as-is (numeric); only scalars/enums are validated. Returns (contract, warnings)."""
+    are kept as-is (numeric); only scalars/enums are validated. Returns (contract, warnings).
+
+    This is the SKELETON payload. Step 7's unified swatch (see below) nests it under
+    `pose` rather than replacing it, so :8770's `?fmt=b` response stays valid as-is."""
     warnings = []
     if not isinstance(raw, dict):
         return empty_skeleton_swatch("pose"), ["raw skeleton swatch was not an object"]
@@ -336,3 +339,295 @@ def normalize_skeleton_swatch(raw):
     out["interpolated"] = int(_as_float(raw.get("interpolated"),
                                          sum(1 for fl in out["flags"] if fl == "interp")))
     return out, warnings
+
+
+# ── Contract B: the UNIFIED motion swatch (Step 7) ──────────────────────────
+# Every backend's output collapses into this one shape. The common core is always
+# present; exactly one payload field carries the kind-specific data:
+#
+#   texture   params + tracks   flow field (cloth / fluid / flock / oscillation)
+#   skeleton  pose             a skeleton swatch (see normalize_skeleton_swatch)
+#   path      path             one object's travel path (see service/objpath.py)
+#
+# An applicator reads the core plus only the payload its kind owns, so adding a
+# backend never changes this shape — the whole point of Step 0's registry.
+#
+# `class` and `kind` are NOT the same axis and Step 8 must branch on both. One clip can
+# yield two swatches with the SAME class and different kinds: a rigid_path boat gives a
+# `path` swatch (where the boat goes) AND a `texture` swatch (its internal motion, from the
+# flow field). Routing on class alone would send that texture swatch to the path_travel
+# applicator, which has no path to follow. class = what the motion IS; kind = what shape of
+# data this swatch carries.
+SWATCH_KINDS = ("texture", "skeleton", "path")
+
+# What the single `confidence` scalar MEANS per kind. As with skeletons, one 0..1
+# number does NOT mean the same thing across kinds, so it is labelled rather than
+# silently compared. Skeletons keep their own subject-specific label.
+SWATCH_CONFIDENCE_OF = {
+    "texture": "gated_motion_amplitude",   # distill's amplitude: static-gated, coverage-weighted
+    "skeleton": "",                        # taken from the nested pose payload
+    "path": "tracked_fraction",            # fraction of the clip the object was tracked for
+}
+
+# The 6 renderer dials + the 2 drift terms distill() emits. Frozen: the applicator
+# reads these names directly (js/animate.js), so they may be added to, never renamed.
+PARAM_KEYS = ("frequency", "amplitude", "direction", "turbulence", "damping",
+              "phaseSpread", "driftX", "driftY")
+
+# Bloat control (Step 7's "dense tracks are big"): a 12x12 grid over a 200-frame clip is
+# ~500KB of JSON. Cap the sampled frames the way pose caps at 160 and drop a decimal — a
+# swatch is a motion SUMMARY, not a lossless recording. The stride is recorded and `fps` is
+# divided by it, so playback timing is preserved exactly.
+#
+# Measured on birds.mp4 (144 tracks x 192 samples, 492 KB), error = the largest distance
+# between a dropped raw sample and the line joining the two kept samples that bracket it:
+#     cap 192 (stride 1, rounding only)  437 KB  89%   0.34 px on a 480px frame
+#     cap 120 (stride 2)                 219 KB  44%   2.11 px          <- chosen
+#     cap  60 (stride 4)                 110 KB  22%   5.56 px
+#     cap  24 (stride 8)                  55 KB  11%  10.29 px
+# 120 halves the payload for 0.4% of a frame; 60 would halve it again but 1.2% starts to
+# show as a visible cut corner on a fast track, so this is where it stops.
+TRACK_FRAME_CAP = 120
+TRACK_COORD_DP = 3         # 3dp of a normalized coord ≈ 0.5px on a 480px analysis frame
+
+
+def empty_swatch(kind="texture", cls="", engine=""):
+    kind = kind if kind in SWATCH_KINDS else "texture"
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": kind,
+        "class": cls if cls in MOTION_CLASSES else "",
+        "engine": engine,
+        "fps": 15.0,
+        "frames": 0,                 # frames this swatch spans (after any stride)
+        "confidence": 0.0,
+        "confidence_of": SWATCH_CONFIDENCE_OF.get(kind, ""),
+        "params": None,              # texture: the 8 distilled dials
+        "bulk": None,                # texture: the steady travel params keeps in driftX/Y
+        "tracks": None,              # texture: [[ [x,y], ... ] x N] normalized point tracks
+        "track_stride": 1,           # frames skipped when sampling `tracks`
+        "pose": None,                # skeleton: a normalized skeleton swatch
+        "path": None,                # path: an objpath travel contract
+        "warnings": [],
+    }
+
+
+def texture_swatch(params, tracks, fps, cls="", engine="", warnings=None):
+    """Build a texture swatch from distill()'s params + grid_trajectories()'s tracks.
+
+    Downsamples/rounds `tracks` per TRACK_FRAME_CAP (and divides fps by the stride
+    so the motion plays at its real speed). `bulk` restates driftX/driftY as the
+    steady travel component — distill already separates it out, so this is a
+    relabelling, not a second estimate.
+    """
+    sw = empty_swatch("texture", cls, engine)
+    p = params if isinstance(params, dict) else {}
+    sw["params"] = {k: _as_float(p.get(k), 0.0) for k in PARAM_KEYS}
+    sw["bulk"] = {"dx": sw["params"]["driftX"], "dy": sw["params"]["driftY"],
+                  "units": "+/-1 = 0.5% of frame width per frame (distill's drift scale)"}
+    kept, stride = _thin_tracks(tracks)
+    sw["tracks"] = kept
+    sw["track_stride"] = stride
+    sw["frames"] = len(kept[0]) if kept else 0
+    sw["fps"] = round(_as_float(fps, 15.0) / stride, 3)
+    # a texture swatch is only as trustworthy as the motion distill actually found
+    sw["confidence"] = round(_clamp01(sw["params"]["amplitude"]), 3)
+    if warnings:
+        sw["warnings"] = [str(w) for w in warnings]
+    return sw
+
+
+def _thin_tracks(tracks, cap=TRACK_FRAME_CAP, dp=TRACK_COORD_DP):
+    """[[ [x,y], ... ] x N] -> (thinned tracks, stride). Even stride so timing stays linear."""
+    if not isinstance(tracks, list) or not tracks:
+        return [], 1
+    n = max(len(t) for t in tracks if isinstance(t, list)) if tracks else 0
+    stride = max(1, -(-n // cap)) if n else 1          # ceil(n / cap)
+    out = []
+    for tr in tracks:
+        if not isinstance(tr, list):
+            continue
+        out.append([[round(_as_float(pt[0], 0.0), dp), round(_as_float(pt[1], 0.0), dp)]
+                    for pt in tr[::stride] if isinstance(pt, (list, tuple)) and len(pt) >= 2])
+    return out, stride
+
+
+def path_swatch(path, cls="rigid_path", engine="", warnings=None):
+    """Wrap an objpath.build_path() contract as a unified swatch."""
+    sw = empty_swatch("path", cls, engine)
+    p = path if isinstance(path, dict) else {}
+    sw["path"] = p
+    sw["fps"] = round(_as_float(p.get("fps"), 15.0), 3)
+    sw["frames"] = int(_as_float(p.get("frames"), len(p.get("points") or [])))
+    # objpath's confidence is None when the caller didn't pass a clip length
+    sw["confidence"] = round(_clamp01(_as_float(p.get("confidence"), 0.0)), 3)
+    if p.get("confidence") is None:
+        sw["confidence_of"] = "unknown (clip length not supplied to build_path)"
+    if warnings:
+        sw["warnings"] = [str(w) for w in warnings]
+    return sw
+
+
+def skeleton_swatch(skel, cls="articulated", engine="", warnings=None):
+    """Wrap a normalize_skeleton_swatch() payload as a unified swatch."""
+    sw = empty_swatch("skeleton", cls, engine or str((skel or {}).get("engine", "")))
+    norm, warn = normalize_skeleton_swatch(skel)
+    sw["pose"] = norm
+    sw["fps"] = round(_as_float(norm.get("fps"), 15.0), 3)
+    sw["frames"] = int(_as_float(norm.get("total"), len(norm.get("frames") or [])))
+    sw["confidence"] = round(_clamp01(_as_float(norm.get("confidence"), 0.0)), 3)
+    # a skeleton's confidence means whatever its subject says it means
+    sw["confidence_of"] = str(norm.get("confidence_of", "")) or "unknown"
+    sw["warnings"] = [str(w) for w in (list(warnings or []) + list(warn))]
+    return sw
+
+
+def normalize_swatch(raw):
+    """Coerce any raw dict into a valid unified swatch. TOLERANT — clamps and fills
+    rather than rejecting; use validate_swatch() when you need a hard yes/no.
+    Returns (contract, warnings)."""
+    warnings = []
+    if not isinstance(raw, dict):
+        return empty_swatch(), ["raw swatch was not an object"]
+    kind = str(raw.get("kind", "")).lower()
+    if kind not in SWATCH_KINDS:
+        warnings.append(f"unknown swatch kind {kind!r}; defaulted to texture")
+        kind = "texture"
+    cls = str(raw.get("class", ""))
+    if cls and cls not in MOTION_CLASSES:
+        warnings.append(f"unknown motion class {cls!r}; dropped")
+        cls = ""
+    out = empty_swatch(kind, cls, str(raw.get("engine", "")))
+    out["fps"] = round(_as_float(raw.get("fps"), 15.0), 3) or 15.0
+    out["frames"] = int(_as_float(raw.get("frames"), 0))
+    out["confidence"] = round(_clamp01(_as_float(raw.get("confidence"), 0.0)), 3)
+    out["confidence_of"] = str(raw.get("confidence_of", "")) or SWATCH_CONFIDENCE_OF[kind]
+    if isinstance(raw.get("warnings"), list):
+        out["warnings"] = [str(w) for w in raw["warnings"]]
+
+    if kind == "texture":
+        p = raw.get("params") if isinstance(raw.get("params"), dict) else {}
+        missing = [k for k in PARAM_KEYS if k not in p]
+        if missing:
+            warnings.append(f"texture swatch missing params {missing}; defaulted to 0")
+        out["params"] = {k: _as_float(p.get(k), 0.0) for k in PARAM_KEYS}
+        b = raw.get("bulk") if isinstance(raw.get("bulk"), dict) else {}
+        out["bulk"] = {"dx": _as_float(b.get("dx"), out["params"]["driftX"]),
+                       "dy": _as_float(b.get("dy"), out["params"]["driftY"]),
+                       "units": str(b.get("units", "")) or
+                                "+/-1 = 0.5% of frame width per frame (distill's drift scale)"}
+        out["tracks"] = raw.get("tracks") if isinstance(raw.get("tracks"), list) else []
+        out["track_stride"] = max(1, int(_as_float(raw.get("track_stride"), 1)))
+    elif kind == "skeleton":
+        out["pose"], w = normalize_skeleton_swatch(raw.get("pose"))
+        warnings.extend(w)
+        # a skeleton's confidence means whatever its SUBJECT says it means, so the
+        # kind-level default is empty and the nested payload supplies the label
+        if not str(raw.get("confidence_of", "")):
+            out["confidence_of"] = str(out["pose"].get("confidence_of", "")) or "unknown"
+    else:
+        out["path"] = raw.get("path") if isinstance(raw.get("path"), dict) else {}
+    out["warnings"] = out["warnings"] + [w for w in warnings if w not in out["warnings"]]
+    return out, warnings
+
+
+def validate_swatch(sw):
+    """STRICT check that `sw` is a usable unified swatch. Returns (ok, errors[]).
+
+    This is the executable form of Step 7's done-when: a texture, a skeleton and a
+    path swatch must all pass this one function. Unlike normalize_swatch it fixes
+    nothing — an applicator can trust anything that passes.
+    """
+    e = []
+    if not isinstance(sw, dict):
+        return False, ["not an object"]
+    if sw.get("schema_version") != SCHEMA_VERSION:
+        e.append(f"schema_version must be {SCHEMA_VERSION}, got {sw.get('schema_version')!r}")
+    kind = sw.get("kind")
+    if kind not in SWATCH_KINDS:
+        return False, e + [f"kind must be one of {SWATCH_KINDS}, got {kind!r}"]
+    if sw.get("class") not in MOTION_CLASSES and sw.get("class") != "":
+        e.append(f"class {sw.get('class')!r} is not a known motion class")
+    if not isinstance(sw.get("engine"), str):
+        e.append("engine must be a string (name the extractor that produced this)")
+    fps = sw.get("fps")
+    if not isinstance(fps, (int, float)) or not (0 < fps <= 240):
+        e.append(f"fps must be in (0, 240], got {fps!r}")
+    frames = sw.get("frames")
+    if not isinstance(frames, int) or frames < 0:
+        e.append(f"frames must be a non-negative int, got {frames!r}")
+    conf = sw.get("confidence")
+    if not isinstance(conf, (int, float)) or not (0 <= conf <= 1):
+        e.append(f"confidence must be in [0,1], got {conf!r}")
+    if not sw.get("confidence_of"):
+        e.append("confidence_of must say what `confidence` measures for this kind")
+    if not isinstance(sw.get("warnings"), list):
+        e.append("warnings must be a list (empty is fine)")
+
+    # exactly ONE payload for the kind, and nothing from another kind
+    payloads = {"texture": ("params", "tracks"), "skeleton": ("pose",), "path": ("path",)}
+    for other, keys in payloads.items():
+        if other == kind:
+            continue
+        for k in keys:
+            if sw.get(k) not in (None, [], {}):
+                e.append(f"{kind} swatch must not carry the {other} payload field {k!r}")
+
+    if kind == "texture":
+        p = sw.get("params")
+        if not isinstance(p, dict):
+            e.append("texture swatch needs a params object")
+        else:
+            for k in PARAM_KEYS:
+                if not isinstance(p.get(k), (int, float)):
+                    e.append(f"params.{k} must be numeric, got {p.get(k)!r}")
+        b = sw.get("bulk")
+        if not isinstance(b, dict) or not all(isinstance(b.get(k), (int, float)) for k in ("dx", "dy")):
+            e.append("texture swatch needs bulk {dx, dy} (the steady travel component)")
+        tr = sw.get("tracks")
+        if not isinstance(tr, list) or not tr:
+            e.append("texture swatch needs a non-empty tracks list")
+        else:
+            bad = next((i for i, t in enumerate(tr)
+                        if not isinstance(t, list) or not t
+                        or not all(isinstance(pt, list) and len(pt) == 2
+                                   and all(isinstance(v, (int, float)) for v in pt) for pt in t)), None)
+            if bad is not None:
+                e.append(f"tracks[{bad}] is not a list of [x,y] pairs")
+            elif len({len(t) for t in tr}) != 1:
+                e.append("every track must have the same length (one point per sampled frame)")
+            elif len(tr[0]) != frames:
+                e.append(f"frames says {frames} but tracks carry {len(tr[0])} points")
+        if not isinstance(sw.get("track_stride"), int) or sw["track_stride"] < 1:
+            e.append("track_stride must be an int >= 1")
+    elif kind == "skeleton":
+        p = sw.get("pose")
+        if not isinstance(p, dict):
+            e.append("skeleton swatch needs a pose payload")
+        else:
+            if p.get("kind") != "skeleton":
+                e.append("pose payload must be a skeleton swatch (kind == 'skeleton')")
+            if p.get("subject") not in SUBJECTS:
+                e.append(f"pose.subject must be one of {SUBJECTS}, got {p.get('subject')!r}")
+            if not isinstance(p.get("frames"), list) or not p["frames"]:
+                e.append("pose payload needs a non-empty frames list")
+            if p.get("subject") != "face" and not p.get("joints"):
+                e.append("pose payload needs named joints so an applicator can retarget")
+    else:
+        p = sw.get("path")
+        if not isinstance(p, dict):
+            e.append("path swatch needs a path payload")
+        else:
+            pts = p.get("points")
+            if not isinstance(pts, list) or len(pts) < 2:
+                e.append("path payload needs >= 2 points ([frame, dx, dy])")
+            elif not all(isinstance(q, list) and len(q) == 3
+                         and all(isinstance(v, (int, float)) for v in q) for q in pts):
+                e.append("every path point must be [frame, dx, dy], all numeric")
+            elif len(pts) != frames:
+                e.append(f"frames says {frames} but path carries {len(pts)} points")
+            if not isinstance(p.get("travel"), dict):
+                e.append("path payload needs a travel summary")
+            if not p.get("label"):
+                e.append("path payload needs the tracked object's label")
+    return not e, e

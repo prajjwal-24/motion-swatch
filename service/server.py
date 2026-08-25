@@ -24,6 +24,7 @@ from flow import ENGINE, raft_flow_series
 from distill import distill, grid_trajectories
 from segment import segment_regions
 import extractors                # pluggable extractor registry (Step 4)
+import contracts                 # shared schemas — Contract B lives here (Step 7)
 _log("[engines] registered: " + ", ".join(f"{n}:{e.kind}" for n, e in extractors.REGISTRY.items()))
 
 app = FastAPI(title="motion-swatch-service")
@@ -89,7 +90,8 @@ def route(cls: str, subject_type: str = None, count: str = None, has_text_prompt
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...),
                   engine: str = None, tracker: str = None, preproc: str = None,
-                  bbox: str = None, preprocess: int = 0, depth: int = 0, path: int = 0):
+                  bbox: str = None, preprocess: int = 0, depth: int = 0, path: int = 0,
+                  swatch: int = 0, cls: str = None):
     # Optional query params select pluggable backends (Step 4). With NO params the
     # response is byte-identical to the pre-Step-4 default (raft_small + RAFT grid).
     suffix = Path(file.filename or "clip.mp4").suffix or ".mp4"
@@ -226,24 +228,29 @@ async def analyze(file: UploadFile = File(...),
         # STARTS clips the travel this backend exists to measure. The path is normalized to
         # the whole frame, so it stays comparable regardless of ?bbox=.
         obj_path = None
+        # path_notes are tracked separately from `notes` because they belong to the PATH
+        # only ("tracked for 42% of the clip"): attaching them to the texture swatch too
+        # would blame the flow field for a gap the object tracker had.
+        path_notes = []
         if path:
             oe, owhy = extractors.resolve(None, extractors.OBJECT_PATH)
             if owhy:
-                notes.append(owhy)
+                path_notes.append(owhy)
             ok, why = oe.probe() if oe else (False, "no object-path engine is registered")
             if not ok:
-                notes.append(f"{oe.name + ' unavailable: ' if oe else ''}{why}; "
-                             "no path returned")
+                path_notes.append(f"{oe.name + ' unavailable: ' if oe else ''}{why}; "
+                                  "no path returned")
             else:
                 try:
                     import objpath
                     raw = oe.load()(full_frames)
                     obj_path, pwarn = objpath.build_path(raw, fps, len(full_frames))
-                    notes.extend(pwarn)
+                    path_notes.extend(pwarn)
                     if obj_path is not None:
                         obj_path["engine"] = oe.name
                 except Exception as ex:
-                    notes.append(f"{oe.name} object path failed, no path returned: {ex}")
+                    path_notes.append(f"{oe.name} object path failed, no path returned: {ex}")
+        notes.extend(path_notes)     # the response still reports everything in one list
 
         resp = {
             "ok": True,
@@ -255,7 +262,7 @@ async def analyze(file: UploadFile = File(...),
             "regions": regions,
         }
         # additive fields ONLY when a param was used — keeps the no-query response byte-identical
-        if engine or tracker or preproc or bbox or preprocess or depth or path:
+        if engine or tracker or preproc or bbox or preprocess or depth or path or swatch:
             resp["tracker"] = used_tracker
             if notes:
                 resp["notes"] = notes
@@ -263,6 +270,7 @@ async def analyze(file: UploadFile = File(...),
             resp["path"] = obj_path
         path_log = (f"{obj_path['label']} dist={obj_path['travel']['dist']:.3f}"
                     if obj_path else "-")
+
         if region is not None:                        # Step 2: mask + camera provenance
             m = region.get("mask") or {}
             resp["preprocess"] = {
@@ -287,11 +295,48 @@ async def analyze(file: UploadFile = File(...),
                     notes.append(w)
             if notes:
                 resp["notes"] = notes
+
+        # (Step 7) ?swatch=1 → the same numbers as unified Contract-B swatches. Built LAST
+        # so every note this request produced (engine fallbacks, mask problems, path
+        # caveats) travels with the swatch rather than being left behind in the response.
+        #
+        # A LIST, not one object: /analyze can run two backends in one call (the flow field
+        # and, with ?path=1, the object tracker), and Contract B carries exactly one payload
+        # per swatch. "Here are two swatches" is honest; folding a path into a texture
+        # swatch would not be. Ordered primary-first — the path says where the object goes,
+        # the texture only its internal motion. `params`/`trajectories`/`path` above are
+        # untouched, so this is purely additive.
+        if swatch:
+            sws, bad = [], []
+            # each swatch carries the notes that are ACTUALLY about it: everything general
+            # (engine fallbacks, mask problems) plus, for the path, its own tracking caveats
+            gen_notes = [n for n in notes if n not in path_notes]
+            if obj_path is not None:
+                sws.append(contracts.path_swatch(
+                    obj_path, cls=cls or "rigid_path", engine=obj_path.get("engine", ""),
+                    warnings=gen_notes + path_notes))
+            sws.append(contracts.texture_swatch(
+                params, trajectories, fps, cls=cls or "",
+                engine=f"{used_engine}+{used_tracker}", warnings=gen_notes))
+            # validate our OWN output: a swatch that fails the shared contract is a bug
+            # here, and shipping it silently is exactly what Step 0's rules exist to stop
+            for sw in sws:
+                ok_sw, errs = contracts.validate_swatch(sw)
+                if not ok_sw:
+                    bad.append(f"{sw['kind']} swatch failed validation: {'; '.join(errs)}")
+            resp["swatches"] = sws
+            if bad:
+                notes.extend(bad)
+                resp["notes"] = notes
+                _log("[analyze] SWATCH VALIDATION FAILED: " + " | ".join(bad))
+
         _log(f"[analyze] FLOW={used_engine} TRAJ={used_tracker} preproc={preproc or '-'} "
              f"bbox={bbox or '-'} crop={'yes' if cropped is not None else 'no'} "
              f"mask={f'{obj_mask.mean() * 100:.0f}% of region' if obj_mask is not None else 'no'} "
              f"depth={((region or {}).get('depth') or {}).get('rank', '-')} "
              f"path={path_log} "
+             f"swatches={'+'.join(s['kind'] for s in resp['swatches']) if swatch else '-'} "
+             f"class={cls or '-'} "
              f"frames={len(frames)} regions={len(regions)}"
              + (f" | NOTES: {'; '.join(notes)}" if notes else ""))
         return resp
