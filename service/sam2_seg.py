@@ -20,6 +20,19 @@ Cost on this box (MPS): 0.8s cached model load (19.7s the first time, 150MB chec
 0.53s per predict. We prompt ONE representative frame, not the whole clip, so this is a
 sub-second addition — image mode, not video propagation. The temporal side is already
 covered by preprocess's Farneback motion gate.
+
+NOT-YET-TAKEN upgrade: SAM2VideoPredictor temporal propagation is verified working here
+(sam2.1-hiera-tiny, MPS, bf16: 2.93 fps at 1024x576; small is oddly FASTER at 3.57 fps).
+It would give a PER-FRAME mask that follows a translating object, which is exactly where
+one static mask is wrong — see _build_mask's note on union-leak for a walking man. Not
+adopted yet because it costs ~16s for a 48-frame clip (vs 0.5s) and distill currently
+takes a single mask. Three landmines if you do adopt it:
+  * offload_state_to_cpu=True SILENTLY empties every mask after the seed frame on MPS
+    (29/30 empty, no exception, 100% reproducible). Keep it False; offload_video_to_cpu is safe.
+  * init_state wants a DIRECTORY of JPEGs named %05d.jpg (it sorts by int(stem)); the .mp4
+    branch imports decord, which has no py3.13 wheel — extract the frames yourself.
+  * init_state materializes every frame as float32 3x1024x1024 (12.6MB/frame), so a
+    300-frame clip is ~3.8GB before inference starts. Chunk long clips.
 """
 import os
 
