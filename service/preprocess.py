@@ -230,11 +230,16 @@ def overlay(frame, mask, box):
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
-def preprocess(path, bbox_norm, motion_id="", cls=""):
+def preprocess(path, bbox_norm, motion_id="", cls="", want_depth=False):
     """Returns (region_preprocess_contract, warnings, viz).
 
     viz = {"frame": rep_bgr, "mask": uint8, "box": (x,y,bw,bh)} for the CLI overlay
     (the server ignores it).
+
+    want_depth: fill contract["depth"] via Depth Anything V2 (service/depth.py). OFF by
+    default because it pulls in torch+transformers and costs a ~0.5-5s cold start, which
+    the OpenCV-only default (routervenv, py3.9) must not depend on. When it's requested
+    but unavailable the contract keeps depth=None and gains a warning — never a fake zero.
     """
     frames, clip = read_frames(path)
     if len(frames) < 2:
@@ -326,10 +331,23 @@ def preprocess(path, bbox_norm, motion_id="", cls=""):
         "method": mask_method,
     }
 
+    depth_obj, engine = None, ENGINE
+    if want_depth:
+        try:
+            import depth as DEPTH                      # lazy: torch/transformers only here
+            ok, why = DEPTH.available()
+            if not ok:
+                warnings.append(f"depth requested but unavailable: {why}")
+            else:
+                depth_obj = DEPTH.depth_summary(frames, mask > 0)
+                engine = f"{ENGINE}+{DEPTH.ENGINE}"
+        except Exception as ex:
+            warnings.append(f"depth failed ({type(ex).__name__}: {ex}); mask/camera unaffected")
+
     raw = {
         "motion_id": motion_id, "class": cls, "seed_bbox": bx,
-        "mask": mask_obj, "camera": camera, "depth": None,
-        "engine": ENGINE, "warnings": warnings,
+        "mask": mask_obj, "camera": camera, "depth": depth_obj,
+        "engine": engine, "warnings": warnings,
     }
     contract, warns = contracts.normalize_region_preprocess(raw, clip)
     return contract, warns, {"frame": rep, "mask": mask, "box": (x, y, bw, bh)}

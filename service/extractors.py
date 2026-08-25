@@ -344,9 +344,20 @@ for _n, _k, _desc, _need, _setup in [
     ("mdm",          TEXT2MOTION, "MDM/MotionGPT — text prompt -> skeleton (no video)", ("mdm",),     "clone GuyTevet/motion-diffusion-model + weights"),
     ("droid_slam",   CAMERA,      "DROID-SLAM — camera pose (vs OpenCV homography floor)", ("droid_slam",), "clone princeton-vl/DROID-SLAM (CUDA); floor = ORB affine"),
     ("sam2",         SEGMENT,     "SAM 2 — clean object mask (vs GrabCut floor)",   ("sam2",),        "pip install 'git+…/sam2' + checkpoint; floor = GrabCut+motion"),
-    ("depth",        DEPTH,       "Depth Anything V2 — monocular depth",            ("transformers",), "pip install transformers + depth-anything weights"),
 ]:
     register(Engine(_n, _k, _desc, probe=_gate(_setup, *_need), factory=_stub(_setup)))
+
+
+# ── DEPTH: Depth Anything V2 (Small, apache-2.0) — real engine, see service/depth.py ──
+def _depth_build():
+    import depth as D
+    return D.depth_summary          # (frames_bgr, mask_bool) -> compact depth facts
+
+
+register(Engine("depth", DEPTH, "Depth Anything V2 Small — monocular relative depth (MPS)",
+                probe=lambda: __import__("depth").available() if _has("transformers")
+                              else (False, "pip install transformers (Depth Anything V2)"),
+                factory=_depth_build, default=True))
 
 
 # ── Routing table: (class, subject_type, count, has_text_prompt) -> engine preference ──

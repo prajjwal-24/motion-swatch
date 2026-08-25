@@ -5,3 +5,5 @@ opencv-python-headless
 fastapi
 uvicorn
 python-multipart
+# Optional engines (the service runs without them; /engines reports what's missing):
+transformers>=5.15   # Depth Anything V2 Small — /analyze?preprocess=1&depth=1

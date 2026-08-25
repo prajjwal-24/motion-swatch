@@ -35,7 +35,7 @@ app.add_middleware(
 )
 
 
-def _preprocess_mask(clip_path, bbox_str):
+def _preprocess_mask(clip_path, bbox_str, want_depth=False):
     """Step 2 integration: run the preprocess helper (object mask + camera motion).
 
     Returns (raw uint8 mask at preprocess's OWN resolution, region_preprocess contract).
@@ -47,7 +47,8 @@ def _preprocess_mask(clip_path, bbox_str):
     import numpy as np
     import preprocess as P
     contract, _warn, _viz = P.preprocess(clip_path, [float(v) for v in bbox_str.split(",")][:4]
-                                         if bbox_str else [0, 0, 1, 1])
+                                         if bbox_str else [0, 0, 1, 1],
+                                         want_depth=want_depth)
     m = contract.get("mask")
     if not m or not m.get("data"):
         return None, contract
@@ -88,7 +89,7 @@ def route(cls: str, subject_type: str = None, count: str = None, has_text_prompt
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...),
                   engine: str = None, tracker: str = None, preproc: str = None,
-                  bbox: str = None, preprocess: int = 0):
+                  bbox: str = None, preprocess: int = 0, depth: int = 0):
     # Optional query params select pluggable backends (Step 4). With NO params the
     # response is byte-identical to the pre-Step-4 default (raft_small + RAFT grid).
     suffix = Path(file.filename or "clip.mp4").suffix or ".mp4"
@@ -110,9 +111,12 @@ async def analyze(file: UploadFile = File(...),
         src_hw = (frames.shape[1], frames.shape[2])   # frame size BEFORE any crop
 
         # (Step 2) object mask + camera motion, seeded by the bbox.
+        if depth and not preprocess:
+            notes.append("?depth=1 needs ?preprocess=1 (depth is computed by the "
+                         "preprocess pass); no depth returned")
         if preprocess:
             try:
-                raw_mask, region = _preprocess_mask(tmp.name, bbox)
+                raw_mask, region = _preprocess_mask(tmp.name, bbox, want_depth=bool(depth))
                 if raw_mask is None:
                     notes.append("preprocess found no usable mask; extracted over the full frame")
             except Exception as ex:
@@ -226,7 +230,7 @@ async def analyze(file: UploadFile = File(...),
             "regions": regions,
         }
         # additive fields ONLY when a param was used — keeps the no-query response byte-identical
-        if engine or tracker or preproc or bbox or preprocess:
+        if engine or tracker or preproc or bbox or preprocess or depth:
             resp["tracker"] = used_tracker
             if notes:
                 resp["notes"] = notes
@@ -241,12 +245,23 @@ async def analyze(file: UploadFile = File(...),
                                   if obj_mask is not None else None),
                 "mask_coverage_frame": m.get("coverage"),
                 "mask_method": m.get("method"),
-                "camera": region.get("camera"),
+                # camera SUMMARY only — the full per-frame transform list is 9 floats x
+                # frames and nothing here consumes it; fetch the whole contract from :8772
+                # (POST /preprocess) when you need it.
+                "camera": {k: (region.get("camera") or {}).get(k)
+                           for k in ("is_static", "model", "residual_px")},
+                "depth": region.get("depth"),      # None unless ?depth=1 (Depth Anything V2)
                 "engine": region.get("engine"),
             }
+            for w in (region.get("warnings") or []):
+                if w not in notes:
+                    notes.append(w)
+            if notes:
+                resp["notes"] = notes
         _log(f"[analyze] FLOW={used_engine} TRAJ={used_tracker} preproc={preproc or '-'} "
              f"bbox={bbox or '-'} crop={'yes' if cropped is not None else 'no'} "
              f"mask={f'{obj_mask.mean() * 100:.0f}% of region' if obj_mask is not None else 'no'} "
+             f"depth={((region or {}).get('depth') or {}).get('rank', '-')} "
              f"frames={len(frames)} regions={len(regions)}"
              + (f" | NOTES: {'; '.join(notes)}" if notes else ""))
         return resp
