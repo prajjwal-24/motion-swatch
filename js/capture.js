@@ -116,11 +116,14 @@ class MotionCapture {
         if (opts.tracker) qs.push('tracker=' + encodeURIComponent(opts.tracker));
         if (opts.preproc) qs.push('preproc=' + encodeURIComponent(opts.preproc));
         if (opts.bbox) qs.push('bbox=' + opts.bbox.map(v => (+v).toFixed(4)).join(','));
+        if (opts.preprocess) qs.push('preprocess=1');   // Step 2: object mask + camera
         const url = SERVICE_URL + '/analyze' + (qs.length ? '?' + qs.join('&') : '');
         const resp = await fetch(url, { method: 'POST', body: form });
         const j = await resp.json();
         if (j.ok) {
-          const via = j.engine + (j.tracker && j.tracker !== 'raft-grid' ? ' + ' + j.tracker : '');
+          const via = j.engine + (j.tracker && j.tracker !== 'raft-grid' ? ' + ' + j.tracker : '')
+            + (j.preprocess && j.preprocess.masked
+                 ? ` + masked ${Math.round(j.preprocess.mask_coverage * 100)}%` : '');
           const motion = {
             id: 'uploaded-' + Date.now(),
             name: file.name.replace(/\.[^.]+$/, ''),

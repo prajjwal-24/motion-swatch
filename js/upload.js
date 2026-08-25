@@ -124,7 +124,9 @@ window.handleMotionUpload = async (e) => {
       const m = textureMotions[i];
       $('upload-status').textContent = `Multi-motion ${i + 1}/${textureMotions.length}: ${m.label} (${m.class})…`;
       const rt = await capture.route(m.class, { subject_type: m.subject_type, count: m.count });
-      const opts = { bbox: m.bbox };
+      // preprocess:1 → object mask + camera motion, seeded by this motion's bbox
+      // (the mask replaces the rectangular crop, so stats come from the object only)
+      const opts = { bbox: m.bbox, preprocess: 1 };
       if (rt && rt.available) {
         if (rt.kind === 'flow' && rt.engine !== 'raft_small') opts.engine = rt.engine;
         else if (rt.kind === 'trajectory') opts.tracker = rt.engine;
@@ -149,6 +151,10 @@ window.handleMotionUpload = async (e) => {
   // (cloth->SEA-RAFT, flock->CoTracker3, …). Falls back to raft_small if router is down.
   let routeOpts = {};
   if (routed) {
+    // Step 2: mask the extraction to the detected object (seeded by its bbox) so the
+    // background stops diluting the swatch. Falls back to full-frame if no mask is found.
+    routeOpts.bbox = routed.bbox;
+    routeOpts.preprocess = 1;
     const rt = await capture.route(routed.class, { subject_type: routed.subject_type, count: routed.count });
     if (rt && rt.engine && rt.available) {
       if (rt.kind === 'flow' && rt.engine !== 'raft_small') routeOpts.engine = rt.engine;
