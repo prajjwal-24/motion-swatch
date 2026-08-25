@@ -1,6 +1,8 @@
-"""Step 7 done-when, as an executable check:
+"""Steps 7 and 9 done-when, as an executable check:
 
-  "a texture, a skeleton, and a path swatch all validate against one schema"
+  Step 7  "a texture, a skeleton, and a path swatch all validate against one schema"
+  Step 9  "the judge's verdict is bounded, and the tune loop terminates" — Contract C,
+          including the whole loop policy, exercised with no VLM anywhere near it.
 
 Run it with ANY python3 — contracts.py is stdlib-only on purpose, so this works in the
 RAFT venv, the py3.9 MediaPipe venv, or the system interpreter:
@@ -41,6 +43,19 @@ def expect_valid(name, sw):
 
 def expect_invalid(name, sw, must_mention=""):
     ok, errs = C.validate_swatch(sw)
+    blob = " | ".join(errs).lower()
+    hit = (not ok) and (must_mention.lower() in blob if must_mention else True)
+    check(name, hit, "accepted it" if ok else f"rejected but not for {must_mention!r}: {blob}")
+
+
+def expect_j_valid(name, j):
+    ok, errs = C.validate_judgement(j)
+    check(name, ok, "; ".join(errs))
+    return ok
+
+
+def expect_j_invalid(name, j, must_mention=""):
+    ok, errs = C.validate_judgement(j)
     blob = " | ".join(errs).lower()
     hit = (not ok) and (must_mention.lower() in blob if must_mention else True)
     check(name, hit, "accepted it" if ok else f"rejected but not for {must_mention!r}: {blob}")
@@ -219,6 +234,116 @@ def main():
     expect_valid("normalize(build(x)) round-trips a real swatch", n4)
     check("...and is unchanged by the round-trip",
           n4 == C.path_swatch(PATH, engine="yolo_bytetrack"))
+
+    # ── Contract C — the judge verdict, and the loop policy around it ────────
+    print("\nCONTRACT C — judge verdict:")
+    good = C.normalize_judgement(
+        {"verdict": "tune", "score": 0.4, "axes": {"speed": 0.2},
+         "deltas": {"frequency": 0.3}, "critique": "reads too slow",
+         "observations": ["the flag ripples about once a second"]},
+        "match_to_reference", 8)[0]
+    expect_j_valid("a well-formed verdict validates", good)
+
+    # NEGATIVE — each of these is a way a VLM actually goes wrong.
+    hallucinated, w = C.normalize_judgement({"verdict": "tune", "score": 0.4,
+                                             "deltas": {"wobbliness": 0.5, "amplitude": 0.1}})
+    check("a delta for a param the renderer doesn't have is dropped",
+          "wobbliness" not in hallucinated["deltas"]
+          and any("unknown param" in x for x in w), str(w))
+    runaway, w = C.normalize_judgement({"verdict": "tune", "score": 0.1,
+                                        "deltas": {"amplitude": 5.0}})
+    check("a runaway delta is capped at the per-iteration limit, not rejected",
+          runaway["deltas"]["amplitude"] == C.PARAM_DELTA_MAX["amplitude"]
+          and any("cap" in x for x in w), str(runaway["deltas"]))
+    expect_j_valid("...and the capped verdict is still actionable", runaway)
+    expect_j_invalid("a score outside [0,1] is rejected",
+                     dict(good, score=1.4), "score")
+    expect_j_invalid("an unlabelled score is rejected — a bare number is not a claim",
+                     dict(good, score_of="vibes"), "score_of")
+    expect_j_invalid("a 'tune' verdict with nothing to tune is not actionable",
+                     dict(good, deltas={}), "actionable")
+    expect_j_invalid("a delta smuggled past the cap is rejected by the validator",
+                     dict(good, deltas={"amplitude": 0.9}), "cap")
+    expect_j_invalid("an invented axis is rejected", dict(good, axes={"grace": 0.5}), "axis")
+    expect_j_invalid("a stale schema_version is rejected",
+                     dict(good, schema_version=0), "schema_version")
+    silent, w = C.normalize_judgement({"verdict": "good", "score": 0.9,
+                                       "deltas": {"amplitude": 0.1}})
+    check("'good' plus deltas is contradictory — the deltas go and it's recorded",
+          not silent["deltas"] and any("ignoring the deltas" in x for x in w), str(w))
+    check("a non-object verdict degrades instead of throwing",
+          C.normalize_judgement("looks fine to me")[0]["score"] == 0.0)
+
+    print("\nCONTRACT C — apply_deltas:")
+    base = {"frequency": 1.0, "amplitude": 0.95, "direction": 350.0,
+            "turbulence": 0.5, "damping": 0.1, "phaseSpread": 0.3,
+            "driftX": 0.0, "driftY": 0.0, "leafFall": True}
+    out, notes = C.apply_deltas(base, {"amplitude": 0.2, "direction": 45.0, "frequency": 0.5})
+    check("an offset can lift a param off zero (a multiplier could not)",
+          C.apply_deltas({"amplitude": 0.0}, {"amplitude": 0.2})[0]["amplitude"] == 0.2)
+    check("direction wraps rather than clamping", out["direction"] == 35.0, out["direction"])
+    check("a param pushed past its range is clamped and reported",
+          out["amplitude"] == 1.0 and any("clamped" in n for n in notes), str(notes))
+    check("non-param keys survive untouched", out["leafFall"] is True)
+    check("apply_deltas does not mutate its input", base["frequency"] == 1.0)
+    check("every renderer param has a range and a delta cap",
+          set(C.PARAM_RANGES) == set(C.PARAM_KEYS) == set(C.PARAM_DELTA_MAX))
+    check("no delta cap exceeds its param's own range",
+          all(C.PARAM_DELTA_MAX[k] <= C.PARAM_RANGES[k][1] - C.PARAM_RANGES[k][0]
+              for k in C.PARAM_KEYS))
+    check("three capped iterations cannot walk a dial across its whole range",
+          all(C.JUDGE_MAX_ITERS * C.PARAM_DELTA_MAX[k]
+              < C.PARAM_RANGES[k][1] - C.PARAM_RANGES[k][0]
+              for k in C.PARAM_KEYS if k not in C.PARAM_CIRCULAR))
+
+    # ── the loop, with no VLM anywhere near it ───────────────────────────────
+    print("\nCONTRACT C — loop policy (no VLM required):")
+    def v(score, verdict="tune", deltas=None):
+        return C.normalize_judgement({"verdict": verdict, "score": score,
+                                      "deltas": deltas if deltas is not None
+                                      else {"amplitude": 0.1}})[0]
+
+    check("an empty history means 'go judge it'", C.judge_should_continue([])[0] is True)
+    check("a good-enough score stops the loop",
+          C.judge_should_continue([v(0.85)])[0] is False)
+    check("a wrong applicator stops the loop instead of nudging dials",
+          C.judge_should_continue([v(0.2, "wrong_class", {})])[0] is False)
+    check("...and says why", "applicator is wrong"
+          in C.judge_should_continue([v(0.2, "wrong_class", {})])[1])
+    check("a low score with deltas keeps going",
+          C.judge_should_continue([v(0.3)])[0] is True)
+    check("a verdict with no deltas stops the loop",
+          C.judge_should_continue([v(0.3, "tune", {})])[0] is False)
+    check("improvement below the threshold stops the loop",
+          C.judge_should_continue([v(0.30), v(0.31)])[0] is False)
+    check("clear improvement continues it",
+          C.judge_should_continue([v(0.30), v(0.50)])[0] is True)
+    check("a regression stops the loop",
+          C.judge_should_continue([v(0.50), v(0.20)])[0] is False)
+    check(f"the cap holds even while improving ({C.JUDGE_MAX_ITERS} iterations)",
+          C.judge_should_continue([v(0.1), v(0.3), v(0.5)])[0] is False)
+    check("...and the reason names the cap",
+          "cap" in C.judge_should_continue([v(0.1), v(0.3), v(0.5)])[1])
+    check("every stop carries a reason worth showing",
+          all(C.judge_should_continue(h)[1]
+              for h in ([], [v(0.9)], [v(0.5), v(0.2)], [v(0.2, "wrong_class", {})])))
+    # the loop stops when a pass FAILS to improve, so the last state is the bad one
+    check("the best iteration is identified, not the last",
+          C.judge_best([v(0.3), v(0.7), v(0.4)]) == 1)
+    check("ties keep the earlier, cheaper iteration",
+          C.judge_best([v(0.5), v(0.5)]) == 0)
+    check("no history has no best", C.judge_best([]) == -1)
+    # a full run, driven only by the policy
+    hist, params = [], {"amplitude": 0.1, "frequency": 1.0}
+    for score in (0.30, 0.55, 0.80):
+        go, _ = C.judge_should_continue(hist)
+        if not go:
+            break
+        hist.append(v(score))
+        params, _ = C.apply_deltas(params, hist[-1]["deltas"])
+    check("a converging run terminates at the cap having applied every delta",
+          len(hist) == 3 and abs(params["amplitude"] - 0.4) < 1e-9,
+          f"{len(hist)} iters, amplitude {params.get('amplitude')}")
 
     if "--json" in sys.argv:
         print("\n" + json.dumps({"texture": dict(tex, tracks=[tex["tracks"][0][:4], "…"]),

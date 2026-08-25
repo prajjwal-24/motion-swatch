@@ -179,6 +179,18 @@ class Animator {
   }
 
   /*
+   * The class the applicator above was chosen from — same swatch-first precedence, so
+   * the two can never disagree about which motion this is. js/judge.js (Step 9) sends
+   * it to the judge, which needs to be told what it is supposed to be looking at.
+   */
+  _classOf(motion) {
+    for (const sw of (motion.swatches || [])) {
+      if (sw && sw.class && sw.applicator) return sw.class;
+    }
+    return motion.class || '';
+  }
+
+  /*
    * The captured pose sequence, from wherever it lives. `motion.pose` is the frozen
    * shape the library has always stored; a Step-7 skeleton swatch nests the same
    * {joints, fps, frames} under `.pose`, so a swatch-only motion drives the rig too

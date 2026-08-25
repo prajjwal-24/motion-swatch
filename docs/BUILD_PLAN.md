@@ -317,6 +317,97 @@ apply → re-render → re-judge (2–3×). Show the critique in the UI.
 
 **Done-when:** a deliberately weak motion improves over ≤3 iterations and the loop stops on success.
 
+**Status (shipped):** end to end, on demand, behind one button. `service/contracts.py` gains
+**Contract C** — the third contract its header comment has promised since Step 1 — and
+`service/vlm_router.py` gains `POST /judge` + `/judge/reset` alongside `/decompose`: same model,
+same forced-tool-call plumbing, opposite direction. `/decompose` looks at a video and proposes
+motion; `/judge` looks at motion and proposes corrections.
+
+Three decisions in Contract C are worth naming. **Deltas are signed additive offsets, never
+multipliers** — amplitude 0.0 times any multiplier is still 0.0, so a multiplier can never
+rescue a dial that is stuck at zero while an offset can. Measured: on a preset with no `driftY`
+at all, the judge added downward travel to a waterfall from nothing (`driftY` 0 → 0.2 → 0.4).
+**`wrong_class` is a first-class verdict, not a low score**, because no amount of dial-tuning
+turns a flock drift into cloth, and it stops the loop instead of paying for two more passes.
+And **the score says what it measured**: `match_to_reference` when the source clip was sent,
+`class_plausibility` when it wasn't, mirroring a swatch's `confidence_of`. The panel prints
+"vs. source clip" or "plausibility only (no source clip)" so the user sees which claim they got.
+
+Clamping is two-stage and the order matters: the per-param cap in `PARAM_DELTA_MAX` is applied
+to the **offset first**, then the sum is clamped to `PARAM_RANGES`. Capping before adding means
+a wild delta still lands near the current value rather than at a range edge — a `direction`
+delta of 400° becomes +45°, not a jump to 360. `direction` wraps mod 360 instead of clamping,
+or every over-rotation would pin at due east. Every range but `frequency` is taken from
+`distill.py`'s own `_clamp01`/±1 clamps rather than invented; `frequency`'s 6.0 ceiling is
+labelled in-code as a **renderer sanity limit chosen here**, since distill computes `k·fps/T`
+with no upper bound of its own.
+
+**The server owns the loop policy.** `js/judge.js` sends frames and obeys `next_params` and
+`continue`; it does not decide when to stop, compute the next params, or clamp anything. Caps
+that stop one confident-wrong verdict are worth nothing if the caller can route around them,
+and a browser is the easiest thing in the world to route around. Sessions are an in-memory
+dict, so a caller inventing a fresh session id gets a fresh budget — documented in-code as a
+cost guard, not a security boundary. Three stop rules: `JUDGE_MAX_ITERS` 3, `JUDGE_GOOD` 0.8,
+and `JUDGE_MIN_GAIN` 0.03. The over-budget call is refused **before** the request is built, so
+it costs nothing.
+
+The loop stops when a pass *fails* to improve, which means the state it stops in is by
+definition the one that didn't help — so `judge_best` finds the highest-scoring iteration and
+`tune()` puts those params back (ties keep the earlier, cheaper one). Live run: 0.72 then 0.55,
+the −0.170 tripped the no-gain rule, and the params returned to the pass-1 set exactly.
+
+Frames are sampled by calling `animator._applyAll(t)` at chosen times rather than by recording
+playback: the animation is a pure function of `t`, so this gives exactly one cycle, evenly
+spaced, reproducibly, where a real-time capture gives whatever 8 moments the event loop
+allowed. The cycle end is excluded so frame 8 isn't a duplicate of frame 1. **What one cycle
+means depends on the payload**: a captured pose or path repeats over its own clip duration
+(`frames/fps`), not `1/frequency` — sampling a 4-second walk at 1/1.4 s shows the same third of
+a stride eight times, the judge honestly reports "I see almost no motion", and the loop cranks
+the amplitude on a motion that was fine.
+
+Two fixes came out of measuring rather than asserting. A canvas `toDataURL()` hands over JPEG
+bytes that were being declared `image/png`, which the API rejects with a 400 instead of just
+reading the file — `_sniff_media()` now reads magic bytes and ignores the declared header
+entirely. And the **intent** sent to the judge was the *layer* name, so a waterfall applied to
+a layer called "title" was graded as a title reveal — a fair verdict on the wrong question.
+`label` is now the motion's name and `element` is the layer, separately; a motion with no class
+says so rather than printing `class ''`. After the fix the same run produced *"For 'Waterfall
+Flow' I'd expect a clearer, sustained downward-biased travel"* and steered `direction` 90→45→0
+and `turbulence` 0.55→0.25.
+
+**Verified**, not asserted:
+- `tests/step9-judge-loop.py` — 46 checks driving the **real** `judge()` with a scripted fake
+  VLM. The model's taste is not what's under test; the point is that no verdict, however wrong
+  or greedy, can push a param past its cap or the loop past its budget. Covers the four stop
+  rules, that the refused call spends no VLM request, session independence, end-to-end
+  clamping, what actually gets sent (forced `tool_choice`, every frame, frames labelled in
+  order, SOURCE before RENDER, 7 images for 3+4, caps generated *from* contracts so the prompt
+  can't drift from what `normalize` accepts), and the media-sniffing regressions.
+- `tests/step9-sampling.js` — 25 checks, dependency-free, on `cycleSeconds` precedence
+  (pose > path > frequency, nested Step-7 swatches included), the [0.4, 4] s bounds, speed
+  scaling, and that a model-supplied critique cannot inject markup into the panel.
+- `service/contracts_selftest.py` is now **101 checks** (was 65), including the negative cases:
+  hallucinated param names, runaway deltas, a cap smuggled past `normalize`, a `tune` verdict
+  with no deltas (not actionable), a `good` verdict *with* deltas (a contradiction), and the
+  arithmetic one — three capped iterations cannot cross a whole range.
+- Live discrimination against the real model, same strip rendered three ways: amplitude 0.00 →
+  **0.05**, 0.06 → **0.55**, 0.55 → **0.82** (spread 0.77, monotonic). Frozen frames drew
+  `amplitude: 0.0` and *"flag edges identical in every frame"* — it did not invent motion it
+  could not see, which is the property the whole loop rests on.
+- Headless-Chrome end-to-end through the real `#btn-judge`: 8 frames, **8 unique**, mean pixel
+  difference 4.5 (the serialized SVG's transforms genuinely moved between samples), verdict
+  rendered into `#judge-out`, revert offered, and the status line quoting the server's own stop
+  reason verbatim. The panel reveals itself from the real flow (layer click → motion chip) and
+  hides again with the inspector.
+
+**Not shipped:** no reference-frame caching — `referenceFrames()` re-seeks the source clip on
+every press (it's once per run, not once per pass, so it isn't the cost driver; the 8 render
+frames are). Sessions are in-memory, so restarting the router forgets a run in progress. The
+judge sees the whole canvas and is told in the prompt which element to watch rather than being
+handed a crop, so a busy scene can still draw its attention elsewhere. And the loop tunes
+**dials only**: a `wrong_class` verdict is surfaced honestly and stops the loop, but nothing
+re-routes the applicator or re-extracts — that would be a Step 10 orchestration change.
+
 ---
 
 ## Step 10 — Integration, orchestration & polish

@@ -348,8 +348,9 @@ function showInspector(s) {
     badge.classList.add('assigned');
   } else { badge.textContent = 'None — select a motion'; badge.classList.remove('assigned'); }
   markLayerActive(s.wrap);
+  showJudge(s);
 }
-function hideInspector() { $('inspector-section').hidden = true; $('inspector-content').hidden = true; markLayerActive(null); }
+function hideInspector() { $('inspector-section').hidden = true; $('inspector-content').hidden = true; markLayerActive(null); showJudge(null); }
 
 // Layers panel appears once artwork is present (poster / scenery / upload)
 // and lists the artwork's groups/layers as a collapsible tree.
@@ -604,6 +605,68 @@ if (btnExportSvg) btnExportSvg.onclick = () => {
   a.download = 'motionlife-poster.svg';
   a.click(); URL.revokeObjectURL(a.href);
   status('Exported! Drop the .svg into any website — <img src="motionlife-poster.svg"> — it animates by itself.', true);
+};
+
+// =========================================================================
+//  Motion judge + auto-tune (Step 9) — on demand only, never automatic
+// =========================================================================
+const judgeOut = $('judge-out');
+const btnJudge = $('btn-judge');
+const btnJudgeRevert = $('btn-judge-revert');
+let judgeUndo = null;         // { motionId, params } — the params from before the last run
+
+function showJudge(s) {
+  const section = $('judge-section');
+  if (!section) return;
+  // only offered where it can actually work: a vector scene with a motion assigned
+  const ok = !!(s && s.motionId && sel.mode === 'svg');
+  section.hidden = !ok;
+  if (!ok && judgeOut) judgeOut.innerHTML = '';
+}
+
+if (btnJudge) btnJudge.onclick = async () => {
+  const s = sel.getActive();
+  const motion = s && s.motionId ? library.getById(s.motionId) : null;
+  if (!motion) { status('Select an object with a motion assigned first.'); return; }
+
+  btnJudge.disabled = true;
+  const paint = st => window.MotionJudge.render(judgeOut, st);
+  paint({ busy: 'Starting…' });
+  const before = { ...(motion.params || {}) };
+  try {
+    const linked = uploadedVideos.find(v => v.motionId === motion.id);
+    const res = await window.MotionJudge.tune({
+      sel, animator, motion,
+      sourceUrl: linked ? linked.url : null,
+      onStatus: msg => paint({ busy: msg }),
+      onStep: st => paint({ ...st, iterations: st.iteration, scoreOf: null }),
+    });
+    paint(res);
+    judgeUndo = { motionId: motion.id, params: before };
+    if (btnJudgeRevert) btnJudgeRevert.hidden = false;
+    const v = res.verdict;
+    status(v ? `Judge: ${Math.round(v.score * 100)}% after ${res.iterations} pass`
+              + `${res.iterations === 1 ? '' : 'es'} — ${res.reason}`
+             : `Judge stopped: ${res.reason}`, !!v && v.score >= 0.8);
+    renderMotionList();     // the chips draw from params, which may have moved
+  } catch (e) {
+    motion.params = before;                       // a failed run leaves nothing behind
+    paint({ error: `${e.message}` });
+    status(`Judge unavailable: ${e.message}. Is the router running on :8771?`);
+  } finally {
+    btnJudge.disabled = false;
+  }
+};
+
+if (btnJudgeRevert) btnJudgeRevert.onclick = () => {
+  if (!judgeUndo) return;
+  const m = library.getById(judgeUndo.motionId);
+  if (m) m.params = judgeUndo.params;
+  judgeUndo = null;
+  btnJudgeRevert.hidden = true;
+  if (judgeOut) judgeOut.innerHTML = '';
+  renderMotionList();
+  status('Tuning undone — the motion is back to its extracted params.', true);
 };
 
 // =========================================================================

@@ -691,3 +691,273 @@ def validate_swatch(sw):
             if not p.get("label"):
                 e.append("path payload needs the tracked object's label")
     return not e, e
+
+
+# ── Contract C: judge verdict (Step 9 — VLM judge + auto-tune loop) ─────────
+#
+# The judge watches a FRAME SEQUENCE of the animated artwork — optionally beside the
+# source clip — and answers the two questions a loop can act on: how good is it
+# (`score`), and what would make it better (`deltas` on the renderer's own dials).
+#
+# Three decisions worth stating, because each one is a trap avoided:
+#
+# 1. `score_of` names what the number measures, the same way a swatch's
+#    `confidence_of` does. A bare 0.62 is not information: 0.62 against the source
+#    clip and 0.62 for "does this look like cloth at all" are different claims, and
+#    only the first is available when there IS a reference clip.
+#
+# 2. Deltas are signed OFFSETS in each param's own units, never multipliers. The
+#    single most common correction on a bad motion is "nothing is moving, raise the
+#    amplitude" — and amplitude 0.0 times any multiplier is still 0.0. A multiplier
+#    cannot escape a dead param; an offset can.
+#
+# 3. `wrong_class` is a first-class verdict, not a low score. No amount of dial
+#    tuning turns a flock drift into cloth: if the applicator itself is wrong the
+#    honest answer is "re-route this", and the loop must stop rather than burn its
+#    remaining iterations nudging params that were never the problem.
+JUDGE_VERDICTS = ("good", "tune", "wrong_class")
+
+# What `score` measures. With the source clip in the prompt the judge can compare;
+# without it, the most it can honestly say is whether the motion reads as its class.
+JUDGE_SCORE_OF = ("match_to_reference", "class_plausibility")
+
+# Named sub-scores. They exist to make the critique auditable: a `deltas` entry for
+# `frequency` should be explained by a low `speed` axis, and a delta with no matching
+# weak axis is a guess. Optional — a judge that only returns the overall score is valid.
+JUDGE_AXES = ("speed", "amplitude", "direction", "character")
+
+# Absolute bounds a param may hold. All but `frequency` are exactly what distill.py
+# already clamps to (_clamp01 for the six 0..1 dials, +/-1 for the drift pair), so the
+# judge cannot push a dial somewhere the extractor would never produce. `frequency` is
+# the exception: distill computes it as k*fps/T with NO upper bound, so 6.0 Hz is a
+# renderer sanity limit chosen here — at 60 fps that is a 10-frame cycle, which already
+# reads as a buzz rather than motion. The presets top out at 3.5.
+PARAM_RANGES = {
+    "frequency":   (0.0, 6.0),
+    "amplitude":   (0.0, 1.0),
+    "direction":   (0.0, 360.0),
+    "turbulence":  (0.0, 1.0),
+    "damping":     (0.0, 1.0),
+    "phaseSpread": (0.0, 1.0),
+    "driftX":      (-1.0, 1.0),
+    "driftY":      (-1.0, 1.0),
+}
+
+# `direction` wraps: 350 + 20 is 10, not 360, and the shorter way from 350 to 10 is
+# +20 rather than -340. Clamping it like a linear dial would pin motion at due east.
+PARAM_CIRCULAR = ("direction",)
+
+# The largest step one iteration may take, ~20% of each param's range. Three iterations
+# can therefore move a dial at most ~60% of its range — enough to fix a wrong setting,
+# not enough for a single confident-but-wrong verdict to run away with the motion. This
+# is the "clamp delta magnitude" half of the plan's anti-oscillation rule.
+PARAM_DELTA_MAX = {
+    "frequency": 0.5, "amplitude": 0.2, "direction": 45.0, "turbulence": 0.2,
+    "damping": 0.15, "phaseSpread": 0.2, "driftX": 0.2, "driftY": 0.2,
+}
+
+# Loop policy, here rather than in the caller so the service and the tests agree.
+JUDGE_MAX_ITERS = 3        # the plan's cap: <= 3 judge calls per tune run
+JUDGE_GOOD = 0.8           # at or above this, stop and keep it — it is good enough
+JUDGE_MIN_GAIN = 0.03      # a re-judge must beat the previous score by this to continue
+
+
+def empty_judgement(score_of="class_plausibility"):
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "verdict": "tune",
+        "score": 0.0,
+        "score_of": _enum(score_of, JUDGE_SCORE_OF, "class_plausibility"),
+        "axes": {},              # optional named sub-scores, JUDGE_AXES
+        "deltas": {},            # param name -> signed offset, clamped to PARAM_DELTA_MAX
+        "critique": "",          # one or two sentences, shown in the UI verbatim
+        "observations": [],      # what the judge actually saw, one phrase each
+        "frames_judged": 0,
+        "warnings": [],
+    }
+
+
+def normalize_judgement(raw, score_of="class_plausibility", frames_judged=0):
+    """Coerce a raw VLM verdict into a valid Contract-C object. Returns (contract, warnings).
+
+    TOLERANT in the same sense as normalize_swatch: clamps and drops rather than
+    rejecting, and records every correction in `warnings` so a caller can see that the
+    judge overreached. Anything it drops is something the loop must not act on — an
+    unknown param name is a hallucinated dial, and applying it would write a key
+    js/animate.js never reads.
+    """
+    warnings = []
+    j = empty_judgement(score_of)
+    j["frames_judged"] = max(0, int(_as_float(frames_judged, 0)))
+    if not isinstance(raw, dict):
+        return j, ["raw judgement was not an object"]
+
+    v = str(raw.get("verdict", "")).lower()
+    if v not in JUDGE_VERDICTS:
+        if v:
+            warnings.append(f"unknown verdict {v!r}; defaulted to 'tune'")
+        v = "tune"
+    j["verdict"] = v
+    j["score"] = round(_clamp01(_as_float(raw.get("score"), 0.0)), 3)
+
+    axes = raw.get("axes")
+    if isinstance(axes, dict):
+        for k, val in axes.items():
+            if k in JUDGE_AXES:
+                j["axes"][k] = round(_clamp01(_as_float(val, 0.0)), 3)
+            else:
+                warnings.append(f"dropped unknown axis {k!r}")
+
+    deltas = raw.get("deltas")
+    if isinstance(deltas, dict):
+        for k, val in deltas.items():
+            if k not in PARAM_KEYS:
+                warnings.append(f"dropped delta for unknown param {k!r}")
+                continue
+            d = _as_float(val, 0.0)
+            cap = PARAM_DELTA_MAX[k]
+            if abs(d) > cap:
+                warnings.append(f"clamped {k} delta {d:+.3f} to {cap:+.3f} (per-iteration cap)")
+                d = cap if d > 0 else -cap
+            if d:
+                j["deltas"][k] = round(d, 4)
+
+    j["critique"] = str(raw.get("critique", "") or "")
+    obs = raw.get("observations")
+    if isinstance(obs, list):
+        j["observations"] = [str(o) for o in obs if str(o).strip()]
+
+    # A 'tune' verdict with nothing to tune cannot drive an iteration. Say so rather
+    # than let the loop spin on an empty delta set.
+    if j["verdict"] == "tune" and not j["deltas"]:
+        warnings.append("verdict is 'tune' but no usable deltas were returned")
+    if j["verdict"] == "good" and j["deltas"]:
+        warnings.append("verdict is 'good'; ignoring the deltas that came with it")
+        j["deltas"] = {}
+
+    j["warnings"] = warnings
+    return j, warnings
+
+
+def validate_judgement(j):
+    """STRICT check that `j` is a usable verdict. Returns (ok, errors[]).
+
+    The executable form of "the loop can act on this": a caller that passes this can
+    apply `deltas` through apply_deltas() without re-checking anything.
+    """
+    e = []
+    if not isinstance(j, dict):
+        return False, ["not an object"]
+    if j.get("schema_version") != SCHEMA_VERSION:
+        e.append(f"schema_version must be {SCHEMA_VERSION}, got {j.get('schema_version')!r}")
+    if j.get("verdict") not in JUDGE_VERDICTS:
+        e.append(f"verdict must be one of {JUDGE_VERDICTS}, got {j.get('verdict')!r}")
+    s = j.get("score")
+    if not isinstance(s, (int, float)) or not (0 <= s <= 1):
+        e.append(f"score must be in [0,1], got {s!r}")
+    if j.get("score_of") not in JUDGE_SCORE_OF:
+        e.append(f"score_of must say what the score measures, one of {JUDGE_SCORE_OF}")
+    axes = j.get("axes")
+    if not isinstance(axes, dict):
+        e.append("axes must be an object (empty is fine)")
+    else:
+        for k, v in axes.items():
+            if k not in JUDGE_AXES:
+                e.append(f"axes.{k} is not a known axis")
+            elif not isinstance(v, (int, float)) or not (0 <= v <= 1):
+                e.append(f"axes.{k} must be in [0,1], got {v!r}")
+    d = j.get("deltas")
+    if not isinstance(d, dict):
+        e.append("deltas must be an object (empty is fine)")
+    else:
+        for k, v in d.items():
+            if k not in PARAM_KEYS:
+                e.append(f"deltas.{k} is not a renderer param")
+            elif not isinstance(v, (int, float)):
+                e.append(f"deltas.{k} must be numeric, got {v!r}")
+            elif abs(v) > PARAM_DELTA_MAX[k] + 1e-9:
+                e.append(f"deltas.{k} exceeds the per-iteration cap {PARAM_DELTA_MAX[k]}")
+    if not isinstance(j.get("critique"), str):
+        e.append("critique must be a string (it is shown to the user verbatim)")
+    if not isinstance(j.get("observations"), list):
+        e.append("observations must be a list (empty is fine)")
+    if not isinstance(j.get("frames_judged"), int) or j["frames_judged"] < 0:
+        e.append("frames_judged must be a non-negative int")
+    if not isinstance(j.get("warnings"), list):
+        e.append("warnings must be a list (empty is fine)")
+    # a verdict of 'tune' that carries no delta is not actionable
+    if j.get("verdict") == "tune" and isinstance(d, dict) and not d:
+        e.append("verdict 'tune' needs at least one delta to be actionable")
+    return not e, e
+
+
+def apply_deltas(params, deltas):
+    """params + deltas, clamped to PARAM_RANGES. Returns (new_params, notes[]).
+
+    Pure: `params` is not mutated. Only PARAM_KEYS are touched, so a params dict
+    carrying extra renderer flags (`leafFall`, say) survives intact. `direction` wraps
+    instead of clamping — see PARAM_CIRCULAR.
+    """
+    notes = []
+    out = dict(params or {})
+    for k, d in (deltas or {}).items():
+        if k not in PARAM_KEYS:
+            notes.append(f"ignored delta for unknown param {k!r}")
+            continue
+        lo, hi = PARAM_RANGES[k]
+        cur = _as_float(out.get(k), 0.0)
+        val = cur + _as_float(d, 0.0)
+        if k in PARAM_CIRCULAR:
+            val = val % hi
+        elif val < lo or val > hi:
+            notes.append(f"{k} {val:.3f} clamped into [{lo}, {hi}]")
+            val = max(lo, min(hi, val))
+        out[k] = round(val, 4)
+    return out, notes
+
+
+def judge_should_continue(history):
+    """Loop control. `history` is the verdicts so far, oldest first. Returns (go, reason).
+
+    Both of the plan's failure modes are stopped here rather than trusted to the caller:
+    the iteration cap, and "require monotonic score improvement or stop". The reason
+    string is meant to be shown — a loop that quietly stops looks like a loop that broke.
+    """
+    h = [j for j in (history or []) if isinstance(j, dict)]
+    if not h:
+        return True, "no verdict yet"
+    last = h[-1]
+    if last.get("verdict") == "wrong_class":
+        return False, "the applicator is wrong for this motion — tuning dials cannot fix that"
+    if _as_float(last.get("score"), 0.0) >= JUDGE_GOOD:
+        return False, f"score {last.get('score')} reached the bar ({JUDGE_GOOD})"
+    if last.get("verdict") == "good":
+        return False, "the judge is satisfied"
+    if len(h) >= JUDGE_MAX_ITERS:
+        return False, f"iteration cap ({JUDGE_MAX_ITERS}) reached"
+    if not last.get("deltas"):
+        return False, "no actionable deltas were returned"
+    if len(h) >= 2:
+        gain = _as_float(last.get("score"), 0.0) - _as_float(h[-2].get("score"), 0.0)
+        if gain < JUDGE_MIN_GAIN:
+            return False, (f"score moved {gain:+.3f}, below the {JUDGE_MIN_GAIN} needed "
+                           f"to justify another pass")
+    return True, "score is still improving"
+
+
+def judge_best(history):
+    """Index of the highest-scoring verdict, or -1 if there are none.
+
+    The loop must leave the BEST iteration applied, not the last one: it stops as soon
+    as a pass fails to improve, so the final state is by definition the one that did
+    not help. Ties keep the earlier (cheaper) iteration.
+    """
+    h = [j for j in (history or []) if isinstance(j, dict)]
+    if not h:
+        return -1
+    best, score = 0, _as_float(h[0].get("score"), 0.0)
+    for i, j in enumerate(h[1:], start=1):
+        s = _as_float(j.get("score"), 0.0)
+        if s > score:
+            best, score = i, s
+    return best
