@@ -89,7 +89,7 @@ def route(cls: str, subject_type: str = None, count: str = None, has_text_prompt
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...),
                   engine: str = None, tracker: str = None, preproc: str = None,
-                  bbox: str = None, preprocess: int = 0, depth: int = 0):
+                  bbox: str = None, preprocess: int = 0, depth: int = 0, path: int = 0):
     # Optional query params select pluggable backends (Step 4). With NO params the
     # response is byte-identical to the pre-Step-4 default (raft_small + RAFT grid).
     suffix = Path(file.filename or "clip.mp4").suffix or ".mp4"
@@ -130,6 +130,7 @@ async def analyze(file: UploadFile = File(...),
         # (energy 4.457 both) while the crop gave 10.367 — dropping the crop silently
         # traded the animated motion field for better scalar params.
         cropped = None
+        full_frames = frames        # kept UNCROPPED for the travel path (see below)
         if bbox:
             cropped = _crop_frames(frames, bbox)
             if cropped is None or len(cropped) < 13:
@@ -220,6 +221,30 @@ async def analyze(file: UploadFile = File(...),
         # intersect) is a refinement, not part of the Step 2 contract.
         regions = segment_regions(flows, fps, filename=file.filename or "")
 
+        # (Step 5) travel path for ONE discrete object (class rigid_path: boat/car/…).
+        # Deliberately run on full_frames, NOT the bbox crop: cropping to where the object
+        # STARTS clips the travel this backend exists to measure. The path is normalized to
+        # the whole frame, so it stays comparable regardless of ?bbox=.
+        obj_path = None
+        if path:
+            oe, owhy = extractors.resolve(None, extractors.OBJECT_PATH)
+            if owhy:
+                notes.append(owhy)
+            ok, why = oe.probe() if oe else (False, "no object-path engine is registered")
+            if not ok:
+                notes.append(f"{oe.name + ' unavailable: ' if oe else ''}{why}; "
+                             "no path returned")
+            else:
+                try:
+                    import objpath
+                    raw = oe.load()(full_frames)
+                    obj_path, pwarn = objpath.build_path(raw, fps, len(full_frames))
+                    notes.extend(pwarn)
+                    if obj_path is not None:
+                        obj_path["engine"] = oe.name
+                except Exception as ex:
+                    notes.append(f"{oe.name} object path failed, no path returned: {ex}")
+
         resp = {
             "ok": True,
             "engine": f"{used_engine}@{DEVICE}",
@@ -230,10 +255,14 @@ async def analyze(file: UploadFile = File(...),
             "regions": regions,
         }
         # additive fields ONLY when a param was used — keeps the no-query response byte-identical
-        if engine or tracker or preproc or bbox or preprocess or depth:
+        if engine or tracker or preproc or bbox or preprocess or depth or path:
             resp["tracker"] = used_tracker
             if notes:
                 resp["notes"] = notes
+        if obj_path is not None:                      # Step 5: object travel path
+            resp["path"] = obj_path
+        path_log = (f"{obj_path['label']} dist={obj_path['travel']['dist']:.3f}"
+                    if obj_path else "-")
         if region is not None:                        # Step 2: mask + camera provenance
             m = region.get("mask") or {}
             resp["preprocess"] = {
@@ -262,6 +291,7 @@ async def analyze(file: UploadFile = File(...),
              f"bbox={bbox or '-'} crop={'yes' if cropped is not None else 'no'} "
              f"mask={f'{obj_mask.mean() * 100:.0f}% of region' if obj_mask is not None else 'no'} "
              f"depth={((region or {}).get('depth') or {}).get('rank', '-')} "
+             f"path={path_log} "
              f"frames={len(frames)} regions={len(regions)}"
              + (f" | NOTES: {'; '.join(notes)}" if notes else ""))
         return resp

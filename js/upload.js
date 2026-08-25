@@ -130,6 +130,10 @@ window.handleMotionUpload = async (e) => {
       if (rt && rt.available) {
         if (rt.kind === 'flow' && rt.engine !== 'raft_small') opts.engine = rt.engine;
         else if (rt.kind === 'trajectory') opts.tracker = rt.engine;
+        // deliberately NO path=1 here, unlike the single-motion branch below: the
+        // path backend tracks the LONGEST track in the whole frame and takes no
+        // bbox, so on a multi-motion clip it could return a different object's
+        // travel than the region being extracted.
       }
       const sw = await capture.captureFromFile(file, opts);
       if (sw) { sw.name = m.label || m.class; sw.desc = `${m.class} · ${sw.desc}`; added.push(sw); }
@@ -159,8 +163,13 @@ window.handleMotionUpload = async (e) => {
     if (rt && rt.engine && rt.available) {
       if (rt.kind === 'flow' && rt.engine !== 'raft_small') routeOpts.engine = rt.engine;
       else if (rt.kind === 'trajectory') routeOpts.tracker = rt.engine;
-      // object_path / skeleton engines aren't applied by the texture path yet -> default raft
-      const via = routeOpts.engine || routeOpts.tracker || 'raft_small';
+      // (Step 5) ONE object travelling across the scene → also ask for its travel path,
+      // which animate.js applies via _applyPathTravel. The flow/trajectory extraction
+      // still runs: the path moves the object, the field supplies its internal motion.
+      else if (rt.kind === 'object_path') routeOpts.path = 1;
+      // name BOTH when a path is requested — raft_small still extracts the field
+      const via = routeOpts.engine || routeOpts.tracker
+        || (routeOpts.path ? `${rt.engine} + raft_small` : 'raft_small');
       $('upload-status').textContent = `VLM: ${routed.class} → routing to ${via}…`;
       console.log(`[MotionLife] VLM: ${routed.label} → class=${routed.class} `
         + `subject=${routed.subject_type} count=${routed.count} → extractor=${via} (${rt.kind}); ${rt.reason}`);

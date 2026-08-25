@@ -111,6 +111,33 @@ centroid path over time. FoundationPose/Objectron for rigid 3D rotation.
 
 **Done-when:** a boat clip yields a smooth path the artwork's boat follows within the scene bounds.
 
+**Status (shipped):** end to end. `yolo_bytetrack` is the registered **OBJECT_PATH default**;
+`service/objpath.py` turns its longest track into a path contract (gap interpolation,
+endpoint-pinned smoothing, offsets from the object's OWN start, `travel` + `straightness`,
+`confidence` = tracked fraction of the clip); `/analyze?path=1` returns it, computed on the
+**full frames** (cropping to where the object starts would clip the travel this backend exists
+to measure). Client side, `js/animate.js:_applyPathTravel` follows it ahead of the name-keyed
+curated behaviours, with ONE uniform scale to the object's on-canvas room (so a diagonal drift
+can't flatten into a vertical one) plus a hard per-frame clamp — the Intensity slider goes to
+2×, so the fit alone isn't enough. Loops **ping-pong**: every position shown is a real sample,
+only the return leg's time order is reversed (snapping back reads as a teleport; easing back
+would be motion that isn't in the video). Verified against the real contract: seam == last
+sample, loop returns to the origin, legs mirror, max step 0.15 px/frame, on-canvas at 2× even
+when jammed 12 px from the edge. Measured: `boat.mp4` → label boat, 114 frames, dist 0.097,
+straightness 0.51, conf 0.42; `birds.mp4` → dist 0.676; `walk-man.mp4` → conf 1.0;
+`boat-night.mp4` correctly **rejected as scene-sized** (0.94×0.18 box). `YOLO_CONF` defaults to
+**0.15**, not ultralytics' 0.25: at 0.25 a distant boat drops out for a few frames and ByteTrack
+issues a new id, fragmenting the "longest track" (4 tracks, longest 10% of the clip → 1 track,
+44%).
+
+**Not shipped:** Objectron/FoundationPose rigid **3D rotation** — `objectron` is still an
+honestly-gated stub, so a path is 2D translation plus the flow field's residual bob, with no
+out-of-plane turn. The path is also **whole-frame**: it takes no bbox, so the multi-motion branch
+deliberately does not request one (it could return a different object's travel than the region
+being extracted). Same-label track *merging* was not added — the plan's own remedy ("pick the
+longest stable track") is what runs, and the confidence gate fixed the fragmentation that
+motivated it; `boat.mp4` still only covers 42% of its clip and says so in `notes`.
+
 ---
 
 ## Step 6 — Backend E: text → motion (new, optional)

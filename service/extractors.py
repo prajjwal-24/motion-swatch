@@ -246,7 +246,12 @@ def _yolo_build():
         for t in range(len(frames)):
             bgr = np.ascontiguousarray((frames[t][:, :, ::-1] * 255).astype(np.uint8))  # RGB->BGR uint8
             r = model.track(bgr, tracker="bytetrack.yaml", persist=(t > 0), verbose=False,
-                            device=dev, conf=float(os.environ.get("YOLO_CONF", "0.25")))[0]  # t==0 resets tracker
+                            # 0.15, not ultralytics' 0.25: a small distant object drops below
+                            # 0.25 for a few frames and ByteTrack assigns a NEW id, so the
+                            # "longest track" becomes a fragment. Measured on boat.mp4 (200
+                            # frames): 0.25 -> 4 boat tracks, longest 21 frames (10%);
+                            # 0.15 -> 1 track, 88 frames (44%). No new spurious tracks appeared.
+                            device=dev, conf=float(os.environ.get("YOLO_CONF", "0.15")))[0]  # t==0 resets tracker
             b = r.boxes
             if b is None or b.id is None:
                 continue
@@ -265,7 +270,7 @@ register(Engine("yolo_bytetrack", OBJECT_PATH,
                 "YOLO + ByteTrack — detect+track one object into a travel path (boat/car/…)",
                 probe=lambda: (True, "ultralytics+torch (yolov8n.pt auto-downloads once)")
                               if (_has("ultralytics") and _has("torch")) else (False, "pip install ultralytics"),
-                factory=_yolo_build))
+                factory=_yolo_build, default=True))     # only real OBJECT_PATH engine
 
 
 # ── SKELETON: torchvision Keypoint R-CNN (multi-person, RUN-HERE — weights ~226MB on 1st use) ──

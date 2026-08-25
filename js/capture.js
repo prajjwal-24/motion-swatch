@@ -117,13 +117,15 @@ class MotionCapture {
         if (opts.preproc) qs.push('preproc=' + encodeURIComponent(opts.preproc));
         if (opts.bbox) qs.push('bbox=' + opts.bbox.map(v => (+v).toFixed(4)).join(','));
         if (opts.preprocess) qs.push('preprocess=1');   // Step 2: object mask + camera
+        if (opts.path) qs.push('path=1');               // Step 5: object travel path
         const url = SERVICE_URL + '/analyze' + (qs.length ? '?' + qs.join('&') : '');
         const resp = await fetch(url, { method: 'POST', body: form });
         const j = await resp.json();
         if (j.ok) {
           const via = j.engine + (j.tracker && j.tracker !== 'raft-grid' ? ' + ' + j.tracker : '')
             + (j.preprocess && j.preprocess.masked
-                 ? ` + masked ${Math.round(j.preprocess.mask_coverage * 100)}%` : '');
+                 ? ` + masked ${Math.round(j.preprocess.mask_coverage * 100)}%` : '')
+            + (j.path ? ` + ${j.path.label} path` : '');
           const motion = {
             id: 'uploaded-' + Date.now(),
             name: file.name.replace(/\.[^.]+$/, ''),
@@ -142,6 +144,11 @@ class MotionCapture {
             // single-motion extraction flow.
             regions: Array.isArray(j.regions) ? j.regions : [],
             framesAnalyzed: j.frames_analyzed,
+            // (Step 5) travel path of ONE tracked object, when ?path=1 found a usable
+            // track: {label, points:[[frame,dx,dy]…] normalized offsets from its start,
+            // travel:{…}, confidence}. Present => animate.js follows it instead of a
+            // name-keyed curated behaviour. Absent whenever nothing was tracked.
+            path: j.path || null,
           };
           if (this.onComplete) this.onComplete(motion);
           return motion;

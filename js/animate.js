@@ -62,6 +62,16 @@ class Animator {
         continue;
       }
 
+      // ---- REAL extracted travel path (Step 5) — beats the curated behaviours ----
+      // motion.path exists ONLY when the service actually tracked one object across
+      // the clip (?path=1 -> yolo_bytetrack -> objpath.build_path). Measured motion is
+      // the point of this tool, so it takes precedence over the name-keyed curation
+      // below, which stays as the fallback for presets and untracked clips.
+      if (s.kind === 'svg' && motion.path && motion.path.points && motion.path.points.length > 1) {
+        this._applyPathTravel(s, motion, rt, intensity);
+        continue;
+      }
+
       // ---- hardcoded scenery behaviors, keyed on the object's name ----
       // (demo curation: whatever swatch is dropped on the "birds" / "clouds"
       //  group, it animates the way a viewer expects that object to move.)
@@ -472,6 +482,87 @@ class Animator {
   }
 
   /*
+   * Travel path (Step 5): follow a path REALLY extracted from the clip.
+   * motion.path.points are [frame, dx, dy] offsets from the tracked object's own
+   * start, normalized to the video frame — so one path fits artwork of any size.
+   *
+   * Two things have to be reconciled with the artwork:
+   *   ROOM — the filmed object may cross 60% of its frame while the artwork's copy
+   *     has 8% of the canvas to its right. Offsets get ONE uniform scale (the
+   *     tightest of the four directions) so the path keeps its SHAPE: a diagonal
+   *     drift must not flatten into a vertical one because the horizontal room ran
+   *     out. The per-frame result is then hard-clamped to the room as well, because
+   *     the Intensity slider goes to 2x and would otherwise push it off canvas.
+   *   LOOPING — the clip ends wherever the object happened to get to. Snapping back
+   *     to the start reads as a teleport, and easing back would be motion that is
+   *     not in the video, so the path PING-PONGS: every position shown is a real
+   *     extracted sample; only the return leg's time order is reversed.
+   *
+   * The path supplies TRAVEL. motion.params (distilled from the flow field inside
+   * the object's own mask) supplies a residual bob ACROSS the course, so a boat
+   * still rides its water while it crosses the scene. SVG only — a raster
+   * selection has no viewBox to measure its room in.
+   */
+  _applyPathTravel(s, motion, t, intensity) {
+    const wrap = s.wrap;
+    const P = motion.path;
+    if (!s._path || s._pathMotion !== motion.id) {
+      const svg = wrap.ownerSVGElement;
+      const vb = (svg && svg.viewBox && svg.viewBox.baseVal) || { width: 1121.71, height: 1121.73 };
+      const MARGIN = 8;
+      let b; try { b = wrap.getBBox(); } catch (_) { b = { x: 0, y: 0, width: 1, height: 1 }; }
+      const room = {
+        left:  Math.max(0, b.x - MARGIN),
+        right: Math.max(0, vb.width - (b.x + b.width) - MARGIN),
+        up:    Math.max(0, b.y - MARGIN),
+        down:  Math.max(0, vb.height - (b.y + b.height) - MARGIN),
+      };
+      // what the path WANTS in each direction, in viewBox units at 1:1 (frame ≙ canvas)
+      let wR = 0, wL = 0, wD = 0, wU = 0;
+      for (const pt of P.points) {
+        wR = Math.max(wR, pt[1] * vb.width);   wL = Math.max(wL, -pt[1] * vb.width);
+        wD = Math.max(wD, pt[2] * vb.height);  wU = Math.max(wU, -pt[2] * vb.height);
+      }
+      let k = 1;   // never >1: the video's own excursion is the natural size
+      const fit = (want, have) => { if (want > 1e-3) k = Math.min(k, have / want); };
+      fit(wR, room.right); fit(wL, room.left); fit(wD, room.down); fit(wU, room.up);
+      const tv = P.travel || {};
+      const netLen = Math.hypot(tv.dx || 0, tv.dy || 0) || 1;
+      s._path = {
+        pts: P.points, span: P.points.length - 1, room,
+        sx: k * vb.width, sy: k * vb.height,       // normalized offset -> viewBox units
+        fps: Math.max(1, P.fps || 30),
+        // unit normal to the NET course: the residual bob rides across the path
+        // instead of fighting it or faking extra travel along it
+        nx: -(tv.dy || 0) / netLen, ny: (tv.dx || 0) / netLen,
+      };
+      if (k < 0.999) {
+        console.log(`[MotionLife] "${s.name}": ${P.label} travel path scaled to `
+          + `${(k * 100).toFixed(0)}% — that is all the room the artwork has for it.`);
+      }
+      s._pathMotion = motion.id;
+    }
+    const pd = s._path, span = pd.span;
+    // ping-pong through the samples, interpolating between the two neighbours so
+    // playback stays smooth at screen refresh rates (samples are at video fps)
+    const u = (t * pd.fps) % (2 * span);
+    const pos = u <= span ? u : 2 * span - u;
+    const i = Math.min(span - 1, Math.floor(pos)), f = pos - i;
+    const a = pd.pts[i], c = pd.pts[i + 1];
+    let dx = (a[1] + (c[1] - a[1]) * f) * pd.sx * intensity;
+    let dy = (a[2] + (c[2] - a[2]) * f) * pd.sy * intensity;
+    // residual motion the flow field measured inside the object's mask
+    const p = motion.params || {};
+    const bob = 4.0 * (0.4 + (p.amplitude || 0.2)) * intensity
+              * Math.sin(2 * Math.PI * 0.28 * (0.6 + (p.frequency || 1) * 0.5) * t);
+    dx += pd.nx * bob; dy += pd.ny * bob;
+    // hard bound: on canvas at every intensity, path scale and bob combined
+    dx = Math.max(-pd.room.left, Math.min(pd.room.right, dx));
+    dy = Math.max(-pd.room.up, Math.min(pd.room.down, dy));
+    wrap.setAttribute('transform', `translate(${dx.toFixed(2)} ${dy.toFixed(2)})`);
+  }
+
+  /*
    * Character / skeletal motion. The swatch carries a captured pose sequence
    * (motion.pose = {joints, fps, frames}) from MediaPipe. Drive a rigged
    * character in the artwork: reposition its two legs (hip→knee→ankle) from the
@@ -588,6 +679,7 @@ class Animator {
         s._wave = null;
         s._river = null;
         s._boat = null;
+        s._path = null; s._pathMotion = null;     // Step 5 travel path (room is re-measured)
         s._field = undefined;
         s._fieldMotion = null;
         // reset per-glyph transforms (glyph split itself is kept — harmless)
