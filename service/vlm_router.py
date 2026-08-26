@@ -9,9 +9,17 @@ the result and say which dials to move (Contract C). Same model, same forced-too
 plumbing, opposite direction: /decompose looks at a video and proposes motion, /judge
 looks at motion and proposes corrections.
 
+Step 10: given the ARTWORK and its layer bboxes, say what each layer depicts and which
+class of motion it would take. That is what lets an extracted swatch be auto-applied to
+the right object without a regex over layer names (Contract D).
+
   POST /decompose    raw video bytes in the body
      -> { version, clip:{w,h,fps,frames_sampled}, static, motions:[
             { id, label, class, bbox:[x,y,w,h] (0-1), confidence, backend, applicator, notes } ] }
+  POST /label        JSON { image: b64|dataURL of the artwork,
+                            layers: [ {id, name, bbox:[x,y,w,h] (0-1)} ] }
+     -> { version, kind:"layer_labels", art, confidence_of, labels:[
+            { id, label, motion_class ("" = should not move), applicator, deforms, confidence, notes } ] }
   POST /judge        JSON { session, class, applicator, label (what the motion IS),
                             element (what it is applied TO), params:{...},
                             frames:[b64|dataURL, ...], reference:[b64, ...] (optional) }
@@ -33,7 +41,7 @@ Two ways to reach Claude (auto-detected):
   * Direct Anthropic API:
       ANTHROPIC_API_KEY=sk-... ROUTER_USE_BEDROCK=0 routervenv/bin/python service/vlm_router.py
 """
-import os, sys, json, base64, tempfile
+import os, sys, json, math, base64, tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import cv2
@@ -484,6 +492,193 @@ def judge(body):
             "stopped": False}, notes + warnings + clamp_notes
 
 
+# ══ Step 10: label the artwork's layers ═════════════════════════════════════
+# The other half of auto-apply. /decompose says what moves in the CLIP; this says what
+# each object in the ARTWORK is, so an extracted swatch can be matched to the thing it
+# belongs on without a regex over layer names.
+#
+# HOW THE MODEL IS TOLD WHICH LAYER IS WHICH: it gets the whole artwork once for
+# context, then one CROP per layer, each announced by id. The alternative — the full
+# image plus a list of normalized bboxes as text — asks the model to do coordinate
+# geometry on a picture, and a mislabelled layer here animates the wrong object. A crop
+# cannot be misread. It costs one small image per layer, which is why LABEL_MAX_LAYERS
+# is capped and the cap is reported rather than silently truncating.
+LABEL_MAX_LAYERS = int(os.environ.get("LABEL_MAX_LAYERS", "12"))
+LABEL_CROP_W = 256               # crops are for identification, not inspection
+LABEL_CROP_MARGIN = 0.04         # a little context around the bbox, in image fractions
+
+LABEL_TOOL = {
+    "name": "report_layers",
+    "description": "Say what each numbered layer of the illustration depicts, and whether it could move.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "labels": {
+                "type": "array",
+                "description": "One entry per layer id you were shown. Do not invent ids.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "the layer id exactly as given"},
+                        "label": {"type": "string",
+                                  "description": "what it depicts, 1-3 words, e.g. 'flag', 'smoke', 'flying birds'"},
+                        "motion_class": {
+                            "type": "string",
+                            "enum": [""] + list(contracts.MOTION_CLASSES.keys()),
+                            "description": ("the class of motion this object would take IF it moved. "
+                                            "Use \"\" (empty) for anything that should stay still — "
+                                            "background, ground, sky, buildings, text, a signature."),
+                        },
+                        "confidence": {"type": "number",
+                                       "description": "0-1, how sure you are of the label and class"},
+                        "notes": {"type": "string", "description": "one phrase of reasoning"},
+                    },
+                    "required": ["id", "label", "motion_class", "confidence"],
+                },
+            },
+        },
+        "required": ["labels"],
+    },
+}
+
+
+def label_prompt(layers):
+    listing = "\n".join(f"  - {l['id']}: the illustration calls it {l.get('name') or '(unnamed)'!r}"
+                        for l in layers)
+    return (
+        "The first image is a complete illustration. The images after it are CROPS of it, "
+        "one per layer, each announced by its layer id.\n\n"
+        "For every layer id, say what it depicts and which class of motion it would take "
+        "if it were animated:\n\n" + _taxonomy_text() + "\n\n"
+        f"The layers, with the name the illustration file gave them:\n{listing}\n\n"
+        "Rules:\n"
+        "- The file's own layer name is a HINT ONLY and is often wrong or meaningless "
+        "(\"Layer 3\", \"path2847\", or a name left over from a different drawing). Judge from "
+        "the crop. Where the picture and the name disagree, trust the picture.\n"
+        "- Most layers should NOT move. Set motion_class to \"\" for background, sky, ground, "
+        "buildings, text, borders — anything that would look wrong animated. An empty class is "
+        "the expected answer, not a failure.\n"
+        "- Only give a class when the object plausibly moves BY ITSELF in the real world.\n"
+        "- A crop may be mostly empty if the layer is thin or scattered; label what is there.\n"
+        "- confidence is how sure you are of the label AND the class together.\n"
+        "- Return exactly one entry per id listed above, using the id verbatim.\n"
+        "Call report_layers."
+    )
+
+
+def _layer_bbox(b):
+    """Normalized [x,y,w,h] clamped into the frame, or None if it is not a real box.
+
+    Unlike contracts._clamp_bbox this NEVER widens: a missing, malformed, NaN or zero-area
+    box means "we do not know where this layer is", and the honest response is to leave the
+    layer unlabelled rather than to crop something else and call it that layer.
+    """
+    try:
+        vals = [float(v) for v in list(b)[:4]]
+    except (TypeError, ValueError):
+        return None
+    if len(vals) < 4 or not all(math.isfinite(v) for v in vals):
+        return None
+    x, y, w, h = vals
+    x = min(max(x, 0.0), 1.0); y = min(max(y, 0.0), 1.0)
+    w = min(w, 1.0 - x); h = min(h, 1.0 - y)
+    if w <= 0 or h <= 0:
+        return None
+    return [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]
+
+
+def _crop(img, bbox):
+    """Normalized [x,y,w,h] -> a JPEG-b64 crop with a little margin, or None if degenerate."""
+    H_, W_ = img.shape[:2]
+    x, y, w, h = bbox
+    # The margin is CONTEXT, not content, so it must not rescue an empty box. Without this
+    # a zero-area layer still cropped (margin alone is ~38x25px at 480x320) and the model
+    # confidently labelled a patch of background — an answer that would then be treated as
+    # a label the model had earned by looking. A layer thinner than one pixel in either
+    # direction has nothing in it to look at; it goes unlabelled and is reported as such.
+    if w * W_ < 1 or h * H_ < 1:
+        return None
+    mx, my = LABEL_CROP_MARGIN * W_, LABEL_CROP_MARGIN * H_
+    x0 = max(0, int(x * W_ - mx)); y0 = max(0, int(y * H_ - my))
+    x1 = min(W_, int((x + w) * W_ + mx)); y1 = min(H_, int((y + h) * H_ + my))
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return None
+    sub = img[y0:y1, x0:x1]
+    if sub.shape[1] > LABEL_CROP_W:
+        scale = LABEL_CROP_W / sub.shape[1]
+        sub = cv2.resize(sub, (LABEL_CROP_W, max(1, int(sub.shape[0] * scale))))
+    ok, enc = cv2.imencode(".jpg", sub, [cv2.IMWRITE_JPEG_QUALITY, 82])
+    return base64.b64encode(enc.tobytes()).decode() if ok else None
+
+
+def label_layers(body):
+    """One labelling pass. Returns (contract, warnings). Never raises on bad input."""
+    notes = []
+    raw_layers = body.get("layers") if isinstance(body.get("layers"), list) else []
+    layers = []
+    for i, l in enumerate(raw_layers):
+        if not isinstance(l, dict) or not str(l.get("id", "")):
+            notes.append(f"layer #{i} has no id; skipped")
+            continue
+        # NOT contracts._clamp_bbox: its zero-size fallback widens a degenerate box to the
+        # rest of the frame, which is the right answer for a seed_bbox ("extract from the
+        # whole frame") and exactly the wrong one here — a layer with no box would be shown
+        # to the model as a slab of the artwork and come back confidently labelled. A layer
+        # whose box is not a box is dropped, and its absence is reported.
+        box = _layer_bbox(l.get("bbox"))
+        if box is None:
+            notes.append(f"layer {str(l['id'])!r} has no usable bbox; skipped")
+            continue
+        layers.append({"id": str(l["id"]), "name": str(l.get("name", ""))[:80], "bbox": box})
+    if len(layers) > LABEL_MAX_LAYERS:
+        notes.append(f"only the first {LABEL_MAX_LAYERS} of {len(layers)} layers were sent "
+                     f"to the model; the rest are unlabelled")
+        layers = layers[:LABEL_MAX_LAYERS]
+    if not layers:
+        return contracts.empty_layer_labels(), notes + ["no labellable layers were sent"]
+
+    shot, shotnotes = _decode_frames([body.get("image") or ""], cap=1)
+    notes += shotnotes
+    if not shot:
+        return contracts.empty_layer_labels(), notes + ["the artwork image could not be read"]
+    media, b64 = shot[0]
+    img = cv2.imdecode(np.frombuffer(base64.b64decode(b64), np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        return contracts.empty_layer_labels(), notes + ["the artwork image could not be decoded"]
+    art = {"width": int(img.shape[1]), "height": int(img.shape[0]), "layers_sent": len(layers)}
+
+    content = [{"type": "text", "text": label_prompt(layers)},
+               {"type": "text", "text": "The whole illustration:"},
+               {"type": "image", "source": {"type": "base64", "media_type": media, "data": b64}}]
+    shown = []
+    for l in layers:
+        crop = _crop(img, l["bbox"])
+        if crop is None:
+            notes.append(f"layer {l['id']!r} bbox is too small to crop; not shown to the model")
+            continue
+        shown.append(l["id"])
+        content.append({"type": "text", "text": f"Layer {l['id']}:"})
+        content.append({"type": "image",
+                        "source": {"type": "base64", "media_type": "image/jpeg", "data": crop}})
+    if not shown:
+        return contracts.empty_layer_labels(art), notes + ["no layer produced a usable crop"]
+
+    msg = _client().messages.create(
+        model=MODEL, max_tokens=2048, tools=[LABEL_TOOL],
+        tool_choice={"type": "tool", "name": "report_layers"},
+        messages=[{"role": "user", "content": content}],
+    )
+    raw = next((b.input for b in msg.content if b.type == "tool_use"), None)
+    if raw is None:
+        return contracts.empty_layer_labels(art), notes + ["VLM did not return structured labels"]
+
+    # `shown` and not `layers`: an id whose crop was never sent must not come back
+    # labelled, because whatever the model said about it, it did not look at it.
+    contract, warnings = contracts.normalize_layer_labels(raw, shown, art)
+    contract["warnings"] = notes + warnings
+    return contract, notes + warnings
+
+
 class H(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -511,7 +706,10 @@ class H(BaseHTTPRequestHandler):
                          "backend": "bedrock" if USE_BEDROCK else "anthropic",
                          "region": AWS_REGION if USE_BEDROCK else None,
                          "classes": list(contracts.MOTION_CLASSES.keys()),
-                         "endpoints": ["/decompose", "/judge", "/judge/reset"],
+                         "endpoints": ["/decompose", "/label", "/judge", "/judge/reset"],
+                         "label": {"max_layers": LABEL_MAX_LAYERS,
+                                   "deforms": list(contracts.LAYER_DEFORMS),
+                                   "mesh_classes": list(contracts.MESH_CLASSES)},
                          "judge": {"max_iterations": contracts.JUDGE_MAX_ITERS,
                                    "good_enough": contracts.JUDGE_GOOD,
                                    "min_gain": contracts.JUDGE_MIN_GAIN,
@@ -521,8 +719,8 @@ class H(BaseHTTPRequestHandler):
                          "auth": _auth_ready()})
 
     def do_POST(self):
-        if self.path not in ("/decompose", "/judge", "/judge/reset"):
-            self._json(404, {"error": "POST /decompose | /judge | /judge/reset"}); return
+        if self.path not in ("/decompose", "/label", "/judge", "/judge/reset"):
+            self._json(404, {"error": "POST /decompose | /label | /judge | /judge/reset"}); return
         n = int(self.headers.get("Content-Length", "0"))
 
         if self.path == "/judge/reset":
@@ -534,6 +732,25 @@ class H(BaseHTTPRequestHandler):
         if not _auth_ready():
             self._json(500, {"error": ("no AWS credentials for Bedrock" if USE_BEDROCK
                                        else "ANTHROPIC_API_KEY not set on the router service")}); return
+
+        if self.path == "/label":
+            body = self._body(n)
+            if body is None:
+                self._json(400, {"error": "/label takes a JSON body"}); return
+            try:
+                nl = len(body.get("layers") or [])
+                print(f"[router] labelling {nl} layer(s)…", file=sys.stderr)
+                res, warnings = label_layers(body)
+                for w in warnings:
+                    print(f"[router] warn: {w}", file=sys.stderr)
+                print("[router] " + ", ".join(
+                    f"{l['id']}={l['label']!r}/{l['motion_class'] or 'static'}({l['confidence']})"
+                    for l in res["labels"]) or "[router] no labels", file=sys.stderr)
+                self._json(200, res)
+            except Exception as e:
+                print(f"[router] label error: {e}", file=sys.stderr)
+                self._json(500, {"error": str(e)})
+            return
 
         if self.path == "/judge":
             body = self._body(n)

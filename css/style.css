@@ -209,6 +209,14 @@ main.right-collapsed #right-panel { overflow: visible; }
 .layer-eye:hover { color: var(--text); }
 .layer-eye.off { opacity: 0.3; }
 .layer-name { overflow: hidden; text-overflow: ellipsis; }
+/* (Step 10) what the VLM read off the artwork, beside the file's own layer name */
+.layer-class {
+  margin-left: auto; flex: 0 0 auto; font-size: 10px; letter-spacing: 0.2px;
+  padding: 1px 6px; border-radius: 8px; max-width: 46%;
+  overflow: hidden; text-overflow: ellipsis;
+  background: rgba(110,92,255,0.18); color: var(--accent);
+}
+.layer-class.static { background: var(--surface); color: var(--muted); }
 
 /* ---- left panel sections ---- */
 .panel-divider { height: 1px; background: var(--panel-edge); margin: 16px 0; }

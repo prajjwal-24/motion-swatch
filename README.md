@@ -17,22 +17,36 @@ shape.
    SVG / PNG / JPEG.
 2. **Select an object** — click any SVG object (or draw a rectangle on a raster
    image). Each object becomes an independently animatable region.
-3. **Get a motion** — pick one of 8 built-in presets, or click **"Capture motion
-   from video"** and upload a short clip. The clip is analyzed with **RAFT optical
-   flow** and distilled into a swatch.
-4. **Apply & tune** — assign the swatch to the selected object, adjust Speed /
+3. **Get a motion** — pick one of 9 built-in presets, or click **"Capture motion
+   from video"** and upload a short clip. A VLM reads the clip, the router picks an
+   extractor, and the measured flow field is distilled into a swatch. One clip
+   containing several motions yields several swatches.
+4. **Let it place itself** *(optional)* — **Auto-label** asks the VLM what each artwork
+   layer depicts, and each swatch lands on the object whose **motion class** matches.
+   No layer names are consulted.
+5. **Apply & tune** — assign a swatch by hand if you'd rather, adjust Speed /
    Intensity, toggle **Cloth mode** (the geometry itself ripples, in place, instead
-   of moving rigidly).
-5. **Play** — every object animates at once with its own motion.
-6. **Export** — animated SVG or a video of the result.
+   of moving rigidly). **Judge** grades the result and proposes bounded tweaks.
+6. **Play** — every object animates at once with its own motion.
+7. **Export** — animated SVG or a video of the result.
 
 ---
 
 ## Quick start
 
 The browser app is **vanilla JS + SVG + Canvas** — no build step, no npm install.
-The Python analysis service is **optional** (the app falls back to a lighter
-in-browser analyzer if it isn't running), but recommended for best extraction.
+The Python services are **optional** (the app falls back to a lighter in-browser
+analyzer, and says which service to start when a feature needs one), but recommended.
+
+**All of it at once:**
+
+```bash
+sh start-all.sh          # brings up 8000, 8765, 8770, 8771, 8772
+sh start-all.sh status   # UP/DOWN per port
+sh start-all.sh stop
+```
+
+The rest of this section is the per-service detail if you want to run them individually.
 
 ### 1. Serve the web app
 
@@ -197,11 +211,23 @@ OpenCV Farneback motion-gating. The app calls it via `MotionCapture.preprocessRe
 7. Repeat for other objects, then press **▶ Play**.
 8. **Export SVG** or **Export video** to save the result.
 
+**The hands-off version** (needs `:8771`): load a scene, click **Auto-label layers** — the VLM
+reads each layer and says what it depicts — then upload a clip with several motions in it. Each
+extracted swatch is placed on the object whose motion class matches, and the status line names
+every placement *and* every refusal (`not placed: "x" (no free layer labelled cloth)`). Then press
+**Judge & tune** to have the result graded and the dials nudged. Nothing in that path looks at a
+filename or a layer name.
+
 ### Source videos
 
-Sample source clips (flag, smoke, river, trees, birds, campfire) are **not** checked
-into the repo (they're large binaries). Any short clip of a single clear motion works
-— point the "Capture motion from video" picker at your own footage.
+Nine sample clips **are** committed in `assets/videos/`: `flag`, `smoke`, `clouds`, `birds`,
+`boat`, `boat-night`, `Autumn`, `walk-man`, `walk-grid`. (`birds.mp4` is 82 MiB — over GitHub's
+50 MB soft warning, under the 100 MB hard limit.) Any short clip works too: point the "Capture
+motion from video" picker at your own footage. A clip with **several** distinct motions is
+handled — each region is extracted into its own swatch with its own engine.
+
+`.gitignore` excludes `*.mp4` everywhere **except** `assets/videos/`, so scratch recordings stay
+out; the 734 MB `CompleteDemo.mp4` is excluded by name as well.
 
 ---
 
@@ -211,24 +237,37 @@ into the repo (they're large binaries). Any short clip of a single clear motion 
 motion-swatch-poc/
 ├── index.html            # app shell + panel layout
 ├── css/style.css
+├── start-all.sh          # bring up / stop / status all four services
 ├── js/
-│   ├── motions.js        # 8 built-in motion presets
+│   ├── motions.js        # 9 built-in motion presets
 │   ├── capture.js        # video → analysis service (or in-browser fallback)
 │   ├── flow.js           # in-browser Lucas–Kanade fallback analyzer
 │   ├── distill.js        # flow field → 8 swatch parameters
 │   ├── regions.js        # object selection + the .layer/.ms-wrap contract
-│   ├── animate.js        # per-object displacement + trajectory-field replay engine
+│   ├── upload.js         # the upload pipeline: decompose → route → extract → apply
+│   ├── autolabel.js      # Contract D: ask the VLM what each artwork layer depicts
+│   ├── animate.js        # class-keyed application, mesh warp, trajectory-field replay
+│   ├── motionfields.js   # the rigid MLS mesh warp + wave data
+│   ├── judge.js          # Step 9: render one cycle, grade it, apply bounded deltas
 │   ├── scenery.js        # built-in Poster / Scenery SVG generators
 │   ├── poster.js, multipick.js, extractviz.js, export.js, videoexport.js
 │   └── main.js           # app controller / wiring
 ├── service/
-│   ├── server.py         # FastAPI + RAFT optical-flow analyzer
+│   ├── server.py         # FastAPI extraction service + extractor registry (8765)
+│   ├── contracts.py      # the shared swatch/decompose/label/judge schemas
+│   ├── extractors.py     # engine registry — each engine probes for what it needs
+│   ├── distill.py, flow.py, segment.py, preprocess.py, sam2_seg.py, depth.py, objpath.py
+│   ├── pose_server.py    # MediaPipe pose (8770)
+│   ├── vlm_router.py     # /decompose, /label, /judge (8771)
+│   ├── preprocess_server.py  # standalone mask/depth/camera helper (8772)
 │   ├── run.sh            # venv bootstrap + uvicorn launch (port 8765)
-│   └── requirements.txt
+│   └── requirements*.txt # one per service — their deps genuinely conflict
 ├── assets/
+│   ├── Artwork/          # poster / autumn / riverside / train-window SVGs
 │   ├── scenes/           # ready-made + rigged scene SVGs (motion-lab, character-duck/bear…)
 │   └── videos/           # sample source clips for extraction
-└── tests/                # puppeteer-core headless-Chrome checks
+├── docs/BUILD_PLAN.md    # the roadmap + the measurements behind each shipped step
+└── tests/                # see "Tests" below
 ```
 
 ### The layer contract
@@ -242,14 +281,63 @@ app falls back to wrapping top-level drawable clusters automatically.
 
 ## Technology
 
-- **Motion extraction:** RAFT (`torchvision` `raft_small`, C_T_V2 weights) deep
-  optical flow, distilled to 8 parameters + a 12×12 trajectory grid.
+- **Motion extraction:** RAFT (`torchvision` `raft_small`, C_T_V2 weights) deep optical flow,
+  optionally SEA-RAFT or CoTracker3, distilled to 8 parameters + a 12×12 trajectory grid.
+- **Localization:** SAM 2 masks the object (seeded by the VLM's bbox) so the background stops
+  diluting the swatch; Depth-Anything-V2-Small gives a relative depth rank over the mask.
+- **Body / path:** MediaPipe Pose (13 joints in the swatch), YOLO + ByteTrack for object travel.
+- **Vision-language:** Claude via `service/vlm_router.py` — reads the clip (`/decompose`), reads the
+  artwork (`/label`), grades the render (`/judge`). Forced tool calls, so there is no prose to parse.
 - **In-browser fallback:** Lucas–Kanade flow when the service is offline.
-- **Rendering:** vanilla JS, inline SVG, Canvas 2D. No framework, no bundler.
-- **Tests:** `puppeteer-core` driving headless Chrome against the static server.
+- **Rendering:** vanilla JS, inline SVG, Canvas 2D. No framework, no bundler. Deformation is a
+  rigid Moving Least Squares mesh warp (Schaefer, McPhail & Warren 2006) over the captured field.
 
-See `IMPLEMENTATION.md` for the full module-level spec, `informations.md` for design
-rationale, and `DEMO_SCRIPT.md` for the demo narrative.
+See `docs/BUILD_PLAN.md` for what each step ships and the measurements behind it,
+`docs/ARCHITECTURE_FLOW.md` for the module/flow detail, `HARDCODING.md` for what is curated, and
+`DEMO_SCRIPT.md` for the demo narrative.
+
+---
+
+## Tests
+
+Most of the suite needs **no browser, no service, and no credentials** — that is deliberate, so a
+contract change breaks loudly on a laptop with nothing running.
+
+```bash
+# pure contracts — runs in every interpreter in the repo (153 checks each)
+service/venv/bin/python  service/contracts_selftest.py
+mpvenv/bin/python        service/contracts_selftest.py
+routervenv/bin/python    service/contracts_selftest.py
+/usr/bin/python3         service/contracts_selftest.py
+
+# node only, no browser and no service
+node tests/step2-field.js            # 14  masked-field distillation
+node tests/step8-applicators.js      # 47  dispatch routes on class, never on the layer name
+node tests/step9-sampling.js         # 25  one-cycle frame sampling for the judge
+node tests/step10-orchestration.js   # 65  class-keyed placement + the evidence precedence chain
+
+# python services driven with a scripted fake VLM — no credentials, no model calls
+routervenv/bin/python tests/step2-preprocess.py   # 38  mask / depth / camera wiring
+routervenv/bin/python tests/step9-judge-loop.py   # 46  no verdict can escape the param caps
+routervenv/bin/python tests/step10-label.py       # 68  no wrong answer can move the wrong object
+```
+
+### The live end-to-end test
+
+`tests/step10-e2e.js` is the one suite that costs real VLM calls. It drives the real UI in headless
+Chrome and is the only thing that can answer "does the model recognise a river when the layer is
+called `path2854`?" — so it labels the Scenery scene twice, once with real names and once with
+**every** layer renamed `Layer N` / `pathNNNN`, then runs `assets/videos/Autumn.mp4` through the
+real file picker onto the artwork it just labelled blind.
+
+```bash
+sh start-all.sh                 # every service must be up (sh start-all.sh status to check)
+npm install --registry=https://registry.npmjs.org/ puppeteer-core   # once, into tests/node_modules
+node tests/step10-e2e.js        # 20 live checks
+```
+
+`tests/node_modules` is gitignored. Install it from inside `tests/` (or with `--prefix tests`); the
+explicit `--registry` matters if your npm defaults to a private registry.
 
 ---
 

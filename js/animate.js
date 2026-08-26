@@ -378,10 +378,19 @@ class Animator {
       const MARGIN = 8, REACH = 55;                 // desired travel, room-clamped below
       // common heading from the captured direction, plus the measured steady drift
       const th = (p.direction || 0) * Math.PI / 180;
-      let hx = Math.cos(th), hy = -Math.sin(th);
+      let hx = Math.cos(th), hy = -Math.sin(th);   // math y-up -> screen y-down
       const dxv = p.driftX || 0, dyv = p.driftY || 0;
       if (dxv || dyv) {
         const dl = Math.hypot(dxv, dyv);
+        /* `direction` is an unsigned dominant-AXIS angle, not a heading: distill.py does
+           `% 180.0`, so a flock falling (270) and one rising (90) both arrive as 90. The
+           drift is the only signed evidence there is — driftY is +down, the same screen
+           space hy is in — so resolve the axis against it BEFORE averaging. Averaging first
+           destroys the heading whenever the two disagree: measured on the pre-fix code, a
+           falling flock (dir 90, driftY +0.9) cancelled to (0,0) and then normalized float
+           noise from cos(90°) into a pure +x heading, drifting 52.08px SIDEWAYS, and a
+           leftward flock (dir 0, driftX -0.9) cancelled exactly and froze at 0.00px. */
+        if (hx * dxv + hy * dyv < 0) { hx = -hx; hy = -hy; }
         hx = (hx + dxv / dl) / 2; hy = (hy + dyv / dl) / 2;
         const hl = Math.hypot(hx, hy) || 1;
         hx /= hl; hy /= hl;

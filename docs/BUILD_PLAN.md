@@ -56,6 +56,90 @@ Anything V2 for a depth map. Homography/DROID-SLAM to estimate camera motion.
 
 **Done-when:** tracking runs only inside the masked object; background points excluded (verify by overlay).
 
+**Status (shipped):** end to end, and the done-when now holds for the motion **field** and not
+just the dials. `service/preprocess.py` turns the router's box into a mask (SAM 2 video mode
+seeded by the box, GrabCut where torch isn't importable, then a motion-energy gate) and measures
+the camera per frame pair. Staticness is the **median corner drift of the pairs that actually
+produced a background transform** — pairs that failed feature detection return identity, and
+counting their 0-drift would drag a moving camera toward "static". The mask never silently
+becomes a rectangle: `method` is always one of `sam2+motion` / `grabcut+motion` /
+`bbox_motion_fallback` / `bbox_empty_fallback`, and the `engine` string gains a `sam2+` prefix
+only when SAM 2 really ran, so a consumer can tell the two apart without parsing method strings.
+
+The gap this step closed: the mask used to restrict `distill()`'s **statistics** only, while
+`grid_trajectories()` still integrated all 144 cells — so the 12×12 field a swatch replays onto
+artwork still carried the camera pan and the scenery behind the object. `distill.track_cells()`
+now decides which cells may track (a cell must be ≥ `TRACK_CELL_FLOOR` = **0.20** object) and
+`grid_trajectories(flows, cell_mask)` **freezes** the rest at their seed point. Frozen and not
+dropped, because the field's squareness is load-bearing (the swatch chip reads the grid size back
+out as `sqrt(tracks.length)`; multipick indexes cells as `gy*GRID+gx`), and because a pinned track
+reads honestly downstream — zero displacement states "nothing was measured here", where a missing
+track would be silent. `segment.py`'s out-of-region freeze was a second copy of this loop; it is
+now the same function, so there is one freeze rule instead of two that can drift.
+
+That surfaced a **real renderer bug**, present before this step via segmented regions:
+`buildTrajField`'s drift removal divided the per-frame mean by *all* 144 tracks. With 8 live
+cells the bulk drift was under-subtracted 18× and the shape slid off its bed — measured peak
+`|dy|` **0.41556** where the fix leaves **0.00000**. The mean is now over live tracks only.
+The swatch chip had the matching flaw: it sampled a fixed frame-wide 5×5 lattice, which on a
+mostly-frozen field showed a dead chip for a motion that was fine. Both now share one
+`activeCellWindow()` in `js/motionfields.js`, so the chip and the animation cannot disagree
+about where the motion is.
+
+**Depth** is reachable from the browser for the first time: `service/server.py` already accepted
+`?depth=1`, but `js/capture.js`'s query builder never emitted it, so nothing could ask. Both
+route sites in `js/upload.js` now request it alongside the mask, and the capture surfaces
+`depth.rank` (the fraction of the frame *farther* than the object) in the swatch's provenance
+string. It costs ~90 ms because `depth_summary` samples 3 frames rather than all of them, and it
+degrades honestly: with torch absent the contract keeps `depth: null` **and** gains
+`"depth requested but unavailable: pip install transformers (missing: torch)"` — never a zero.
+
+`js/capture.js:preprocessRegion()` — a client for `:8772` with zero callers — was **deleted**
+rather than wired up. `:8772` runs under `routervenv`, which has no torch, so calling it from the
+browser would have quietly downgraded the mask to GrabCut to get the same answer over an extra
+HTTP hop; `/analyze?preprocess=1` runs the same `preprocess.py` **in-process** under
+`service/venv`, where SAM 2 is importable. `:8772` stays as the surface for the *full* contract —
+the RLE mask pixels and the per-frame camera transform, neither of which `/analyze` returns
+because nothing in the renderer consumes them.
+
+**Verified**, not asserted:
+- `tests/step2-preprocess.py` runs in **both** service venvs and must pass in both —
+  `service/venv/bin/python` (40 + 2 depth checks, mask `sam2+motion`) and
+  `routervenv/bin/python` (40 checks, mask `grabcut+motion`, depth gated). Interpreter-specific
+  facts are **printed as measurements** rather than asserted; a test that only passed where SAM 2
+  is installed would have hidden the fact that the browser flow reaches SAM 2 and `:8772` doesn't.
+  The background-exclusion check is differential on a synthetic clip with a known 3 px/frame
+  camera pan and a known 4 px/frame object fall: ungated the field's mean displacement is
+  `(+0.4688, +0.2083)` — camera-dominated; gated it is `(+0.0000, +0.2083)` — the object's, with
+  **no x component at all**. Camera staticness is measured on a written clip too (0 px/frame →
+  static, model `none`, empty `per_frame`; 6 px/frame pan → non-static, model `affine`, 24
+  transforms, larger residual). GrabCut pixel counts are deliberately **never** asserted:
+  `cv2.grabCut` returned 458, 458, then 10 foreground px across three runs of one clip.
+- `tests/step2-field.js` (14 checks, node only) drives the real `buildTrajField` over fields whose
+  answer is known by construction. Its tolerance is calibrated against the pre-fix code, not
+  picked: it fails on the old drift removal and passes on the new one.
+- `service/contracts_selftest.py` gains 21 `region_preprocess` checks (101 → **122**), stdlib-only,
+  green in all four interpreters. Every negative is a way an estimator could really be wrong — an
+  unknown mask encoding, string `w`/`h`, an unknown camera model, coverage 7.5, a `per_frame`
+  that isn't a list, a NaN seed box — and each must produce a **warning plus a safe value**, since
+  a silently-dropped field reads downstream as "the camera was static" or "there was no mask".
+- Live, on `flag.mp4` with `?preprocess=1&depth=1`: mask `sam2+motion`, coverage 3.4% of the
+  region, **8/144 cells tracked** (136 frozen), camera non-static `affine` residual 3.705 px,
+  depth rank 0.7245. On `Autumn.mp4`: `sam2+motion`, 8/144, static camera, rank 0.5343.
+- The overlay the done-when asks for is `service/preprocess_cli.py`, which writes the mask
+  alpha-blended red with the seed box in green; `preprocess()` returns those inputs so the PNG is
+  reproducible, and the test asserts they come back.
+
+**Not shipped:** `segment_regions()` still runs **unmasked** — it builds its own per-region pixel
+masks from flow clustering, so feeding the object mask in is a refinement, not part of this
+contract. A non-default point tracker (CoTracker3) returns its own scattered points rather than
+grid cells, so the cell gate cannot apply to it; the response says so in `notes` instead of
+implying it did. Depth is **reported but not consumed** — nothing in the renderer uses `rank` for
+layer order or parallax gain yet. DROID-SLAM is not wired: the camera model is 4-DOF
+`estimateAffinePartial2D`, chosen over a full homography because it cannot projectively blow up
+on the near-collinear features a flag's rigging produces. Per-region mask **caching** was not
+added; each `/analyze` re-segments.
+
 ---
 
 ## Step 3 — Backend A: articulated bodies (extend what we have)
@@ -386,7 +470,7 @@ and `turbulence` 0.55→0.25.
 - `tests/step9-sampling.js` — 25 checks, dependency-free, on `cycleSeconds` precedence
   (pose > path > frequency, nested Step-7 swatches included), the [0.4, 4] s bounds, speed
   scaling, and that a model-supplied critique cannot inject markup into the panel.
-- `service/contracts_selftest.py` is now **101 checks** (was 65), including the negative cases:
+- `service/contracts_selftest.py` was **101 checks** at this step (was 65), including the negative cases:
   hallucinated param names, runaway deltas, a cap smuggled past `normalize`, a `tune` verdict
   with no deltas (not actionable), a `good` verdict *with* deltas (a contradiction), and the
   arithmetic one — three capped iterations cannot cross a whole range.
@@ -422,6 +506,130 @@ apply → judge. Auto-label layers with the VLM. Remove the synthetic `Autumn Fa
 - *Reproducibility across machines.* → Per-service `requirements-*.txt` + a README with the exact env/versions (MediaPipe needs py≤3.12).
 
 **Done-when:** upload one multi-motion clip → named swatches auto-applied to the right objects → judged & tuned — end to end, no filename hints, minimal hardcoding.
+
+**Status (shipped):** end to end, on one clip, measured against the live model with the layer
+names destroyed. The done-when is one run: `assets/videos/Autumn.mp4` into `#motion-input` →
+`Applied 2/2: "falling autumn leaves" → flying birds, "leaves on branch fluttering" → flag`,
+where the two layers that received them are named `path2850` and `Layer 24` in the file.
+
+**The shortcut is deleted, and the deletion is documented where it was.** A
+`/leaf|leaves|falling|autumn/i.test(file.name)` branch used to intercept the upload, play the
+extraction overlay over the real video, and hand back a hand-written spiral from
+`synthFallTrajectories()` plus eight hand-tuned dials, all captioned *"Captured from
+falling-leaves video"*. Nothing about the clip was measured and the UI said otherwise. It is
+gone; `js/upload.js:106-115` is a comment saying what stood there and why, because a reader who
+finds the leaf look in `js/motions.js` deserves to know it is a **preset** and not a leftover.
+The same clip now routes like any other and comes back with `frequency 0.184 / amplitude 0.397 /
+direction 83 / turbulence 0.082 / damping 0.71 / phaseSpread 0.079 / driftX −0.049 / driftY
+0.617` — numbers that belong to those pixels.
+
+**Contract D, `/label`: what each layer IS.** `/decompose` says what moves in the *clip*; the
+missing half was what each object in the *artwork* is, since without it a class-keyed swatch has
+nowhere to go but a name match. The model gets the whole illustration once at **512px** wide for
+context, then **one 256px crop per layer**, each announced by its layer id. The rejected
+alternative was the full image plus a list of normalized bboxes as text — that asks the model to
+do coordinate geometry on a picture, and a mislabelled layer here animates the wrong object. A
+crop cannot be misattributed. It costs one small image per layer, which is why
+`LABEL_MAX_LAYERS` is **12** and the cap is *reported* (`only the first 12 of N layers were
+sent`) rather than silently truncating. The layer name is passed as the string an illustrator
+typed and explicitly demoted: the prompt calls it a **HINT ONLY** and says to *trust the
+picture* when the two disagree. `deforms` is never asked for — it is derived from the class
+through `MESH_CLASSES`, so `mesh`/`rigid` cannot disagree with the class it came from.
+
+**The blind experiment is the measurement that retires the name regex.** Offline tests with a
+fake model can prove that no wrong answer moves the wrong object; none of them can tell you
+whether the model recognises a river when the layer is called `path2854`. So the same Scenery
+artwork was labelled twice against the live model: once with real names, once with **every**
+`<g>` renamed `Layer N` / `pathNNNN`. Named: **12/12** objects identified. Blind: **11/12** from
+the pixels alone (9–11/12 across four runs; motion classes acceptable **12/12 in every run**).
+The one the regex existed for: shown as `Layer 24`, the model returned `"flag"` / `cloth` / 85%,
+`deforms: mesh`, and clicking it records `waveModeFrom="vlm:cloth"` with the region taking the
+*label* as its name. Renaming had to cover every `<g>`, not just `g.layer` — `collectLayers`
+walks the whole group tree, so two layers (`ground`, `flagpole`) kept real names on the first
+attempt and were quietly carrying the blind pass.
+
+**Auto-apply matches on class only, and the rule lives in Python.**
+`contracts.match_swatches_to_layers` is a one-to-one greedy match, best-confidence first: class
+equality is the entire criterion; a layer below `LABEL_CONF_MIN` **0.35** is not a candidate at
+all (a 0.2-confidence guess that the sky is fluid is not evidence enough to animate the sky); a
+swatch with no class matches nothing and is reported unmatched rather than defaulted onto the
+nearest layer. One layer takes at most one swatch — two flags and one cloth swatch means one
+flag animates and the other says it has no swatch, because a shared swatch looks like two
+objects moving in lockstep, which is a lie about the source clip. It is in `service/contracts.py`
+rather than the browser so it is testable without a DOM, and the browser mirrors only the
+constant (`js/autolabel.js:36`), asserted equal.
+
+**Surviving hardcoding is gated and every selection says which evidence decided it.**
+`CLOTH_NAME_HINT` in `js/regions.js` is kept, not deleted, because with the router offline it is
+the only answer available and a flag that does not ripple is a worse failure than an honest
+guess — but it is now the **last** resort, and `waveModeFrom` records the winner. Strongest
+first: `preset_leaffall` → `artwork_rigid` → `motion_field` → `vlm:<class>` → `name_hint` →
+`default`. `motion_field` above `vlm:<class>` is deliberate: a measured per-point displacement
+field outranks a still-image reading. It is enforced in two places, because labels and motions
+can arrive in either order — `applyMotionToActive` writes it after `MotionAutoLabel.apply`, and
+`runAutoLabel` refuses to overwrite it when labels land later. The label still decides *which*
+object the swatch goes on and what the region is called; only the deform mode defers to the
+measurement.
+
+**Five bugs came out of measuring rather than asserting**, three of them from a single live run.
+(1) **Flock headings cancelled themselves out.** `_applyFlock` averaged the `direction` axis with
+the drift vector *before* resolving the axis's sign against it, and `direction` is an unsigned
+dominant-**axis** angle — `distill.py` does `% 180.0`, so a flock falling and one rising both
+arrive as 90, and `driftX/driftY` are the only signed evidence there is. Measured on the pre-fix
+code: a falling flock (`dir 90, driftY +0.9`) cancelled to (0,0), then normalized float noise from
+`cos(90°)` into a pure +x heading and drifted `dx [0.00, 52.08] dy [0.00, 0.00]` — sideways
+instead of down; a leftward flock (`dir 0, driftX −0.9`) cancelled exactly and froze at `0.00px`.
+Resolving the axis against the drift sign first gives `dy [0.00, 52.08]` and `dx [−52.08, 0.00]`.
+(2) `_crop`'s context margin was **rescuing a zero-area box** into ~38×25px of pure background, so
+a degenerate layer got labelled from whatever happened to be behind it. The margin is context, not
+content, and must not resurrect an empty box.
+(3) `contracts._clamp_bbox` was **widening** a degenerate layer box:
+`[0.5, 0.5, 0, 0]` came back `[0.5, 0.5, 0.5, 0.5]` — a quarter of the artwork. That fallback is
+right for a *seed* bbox and wrong for a *layer* bbox, so `_layer_bbox()` was added next to it and
+refuses rather than grows. (4) The class **did not survive the fallback**: when one region's
+service call died on `ERR_NO_BUFFER_SPACE`, `captureFromFile` dropped to in-browser Lucas–Kanade,
+which returns params and no Contract-B swatch — so `_classOf()` saw `''` and the region was
+honestly refused (`motion has no class`) and never placed. The router's class is evidence either
+way; both upload paths now carry it across. (5) The `waveModeFrom` precedence comment in
+`js/regions.js` **contradicted the code**, marking `vlm:<class>` as preferred. The code was
+right; the comment is fixed and pinned doc-to-code so it cannot drift again.
+
+**Verified**, not asserted:
+- `tests/step10-e2e.js` — **20 live checks** through headless Chrome, the real buttons, the real
+  router, the real model. Three passes: NAMED, BLIND, and the Autumn clip, the last deliberately
+  run on the artwork the blind pass left behind, so the whole done-when happens in one shot on
+  layers whose names say nothing. Numbers above; both regions extracted `144 tracks × 192
+  frames` — flock via `cotracker3` (masked 20%, 38/144 cells, depth rank 0.4147), cloth via
+  `searaft` (masked 16%, 32/144 cells, depth rank 0.5524).
+- `tests/step10-orchestration.js` — **65 checks**, node-only: no browser, no service, no
+  credentials. The class-keyed matcher, the honest failure paths when the router is down, that a
+  classless swatch is refused rather than dropped somewhere, and the precedence chain pinned
+  against the two writers in `js/main.js` so the doc and the code cannot separate.
+- `tests/step10-label.py` — **68 checks** driving the real `label_layers()` with a scripted fake
+  VLM. What the model calls a flag is not under test; what is under test is that a model
+  answering wrongly, greedily, or about layers it was never shown **cannot** get a swatch onto
+  the wrong object — with expired credentials, on a bad day for the model, and offline. Includes
+  the `_crop` colour cast test that measures *which object* a crop actually landed on (the flag
+  is the reddest of the three, the ground the greenest) instead of assuming the geometry.
+- `service/contracts_selftest.py` is **153 checks** at this step (was 122; +31 for Contract D),
+  passing under all four interpreters in the repo — `service/venv` 3.13.12, `mpvenv` 3.11.15,
+  `routervenv` 3.9.6, and system `/usr/bin/python3` 3.9.6 — because it imports nothing but the
+  standard library, so a contract change breaks loudly in every service that shares it.
+
+**Not shipped:** the judge is **not** auto-chained after auto-apply — "judged & tuned" is one
+more deliberate button press, since a 3-iteration VLM loop firing automatically on every upload
+is a cost the user should choose. A `wrong_class` verdict still stops the loop honestly without
+re-routing or re-extracting (carried from Step 9). `DEMO_PROFILES` filename matching survives in
+`service/segment.py:296` for the demo clips' region layout — the *one* filename test left in the
+repo, and it decides nothing about the extracted motion. `CLOTH_NAME_HINT` survives as the gated
+last resort described above, and the four name-keyed scenery behaviours survive behind `if (!app)`
+for the classless built-in presets (Step 8). `:8772` (preprocess) is still not called from the
+browser; it reaches masking through `preprocess=1` on `:8765` instead. The layer cap is 12 and the
+Scenery scene has exactly 12 layers, so the live run sits **at** the cap — a busier illustration
+gets the first 12 and a warning, not a silent partial answer. Labels are per-layer crops with no
+relationships between them, so "the flag *on* the pole" is two independent readings; and the
+model's class for a thin cloud is genuinely unstable across runs (`cloth` 55% named, `fluid` 55%
+blind), which the confidence floor mitigates but does not remove.
 
 ---
 

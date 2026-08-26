@@ -24,6 +24,57 @@
 const REGION_COLORS = ['#6e5cff', '#ff5c8a', '#3ddc84', '#ffd93d', '#4cc9ff', '#ff8a4c', '#b84cff', '#5cffd6'];
 const SVGNS = 'http://www.w3.org/2000/svg';
 
+/* (Step 10) SURVIVING HARDCODING, GATED AND LABELLED.
+ *
+ * `waveMode` decides whether a region's geometry is bent (a flag has to ripple) or the
+ * region is moved as a rigid whole. This regex is a guess from the layer NAME — a claim
+ * about a string an illustrator typed, not about the artwork — so it is now the LAST
+ * resort, and every selection records which evidence decided it. Strongest first, which
+ * is the order the writers actually run in (js/main.js applyMotionToActive, then
+ * runAutoLabel, and deformDefault below for a region with no motion yet):
+ *
+ *   preset_leaffall  the autumn-fall PRESET is rigid by construction (js/motions.js)
+ *   artwork_rigid    the artwork itself marks the object data-motion-mode="rigid"
+ *   motion_field     a captured motion with a real trajectory field arrived — a MEASURED
+ *                    displacement per point, so it outranks a still-image reading
+ *   vlm:<class>      the VLM looked at the layer (Contract D, js/autolabel.js)
+ *   name_hint        this regex matched                                      <- a guess
+ *   default          nothing matched; rigid
+ *
+ * `motion_field` above `vlm:<class>` is deliberate and is enforced in two places:
+ * applyMotionToActive writes it after MotionAutoLabel.apply has written the label, and
+ * runAutoLabel refuses to overwrite it when labels arrive later. The label still decides
+ * WHICH object the swatch lands on and what the region is called — only the deform mode
+ * defers to the measurement.
+ *
+ * It is kept rather than deleted because it is the only answer available with the router
+ * offline, and a flag that does not ripple is a worse failure than an honest guess. It is
+ * never consulted when a label exists: MotionAutoLabel.apply overwrites both fields.
+ */
+const CLOTH_NAME_HINT = /flag|banner|cloth|pennant|curtain|sail/i;
+
+function deformDefault(wrap, name) {
+  const store = window.__mlLayerLabels;      // set by main.js after a /label pass
+  const lab = (wrap && store && store.byEl) ? findLabel(store.byEl, wrap) : null;
+  if (lab) {
+    // the VLM read the picture; the file's layer name is the thing it was told to
+    // distrust, so its label wins for the display name too.
+    return { name: lab.label || name, waveMode: lab.deforms === 'mesh',
+             waveModeFrom: `vlm:${lab.motion_class || 'static'}`, layerLabel: lab };
+  }
+  if (CLOTH_NAME_HINT.test(name)) return { waveMode: true, waveModeFrom: 'name_hint' };
+  return { waveMode: false, waveModeFrom: 'default' };
+}
+
+// a label is attached to a LAYER GROUP; the selection wraps some descendant of it, so
+// match either direction rather than requiring the exact same node.
+function findLabel(byEl, wrap) {
+  for (const [el, lab] of byEl) {
+    if (el === wrap || el.contains(wrap) || wrap.contains(el)) return lab;
+  }
+  return null;
+}
+
 class SelectionManager {
   constructor(overlay, artworkContainer) {
     this.overlay = overlay;
@@ -210,8 +261,7 @@ class SelectionManager {
       wrap,
       center: [bb.x + bb.width / 2, bb.y + bb.height / 2],
       motionId: null, speed: 1.0, intensity: 1.0,
-      // cloth-like names default to wave (geometry) deformation
-      waveMode: /flag|banner|cloth|pennant|curtain|sail/i.test(name),
+      ...deformDefault(wrap, name),
     };
     this.selections.push(sel);
     this.activeIdx = this.selections.length - 1;

@@ -52,17 +52,23 @@ function buildChipState(m) {
   if (m.trajectories && m.trajectories.length >= 25) {
     // subsample the 12x12 grid to 5x5, store drift-removed relative tracks
     const G = Math.round(Math.sqrt(m.trajectories.length));   // 12
-    const idx = [];
-    for (let gy = 0; gy < GRID_N; gy++)
-      for (let gx = 0; gx < GRID_N; gx++)
-        idx.push(Math.min(G - 1, Math.round(gy * (G - 1) / (GRID_N - 1))) * G
-               + Math.min(G - 1, Math.round(gx * (G - 1) / (GRID_N - 1))));
-    const tracks = idx.map(i => {
-      const tr = m.trajectories[i];
+    const rel = m.trajectories.map(tr => {
       const x0 = tr[0][0], y0 = tr[0][1];
       return tr.map(p => [p[0] - x0, p[1] - y0]);
     });
-    return { tracks };
+    // Lay the 5x5 lattice over the cells that actually MOVED, not over the whole frame.
+    // A field can be mostly frozen on purpose — the object mask (Step 2) pins background
+    // cells, and segmented regions pin out-of-region cells — so a fixed frame-wide lattice
+    // could sample 25 stationary cells and show a dead chip for a motion that is fine.
+    // activeCellWindow is shared with buildTrajField (js/motionfields.js) so the chip and
+    // the animation can never disagree about where the motion is.
+    const [a0, a1, b0, b1] = activeCellWindow(rel, G);
+    const idx = [];
+    for (let gy = 0; gy < GRID_N; gy++)
+      for (let gx = 0; gx < GRID_N; gx++)
+        idx.push((b0 + Math.round(gy * (b1 - b0) / (GRID_N - 1))) * G
+               + (a0 + Math.round(gx * (a1 - a0) / (GRID_N - 1))));
+    return { tracks: idx.map(i => rel[i]) };
   }
   return { tracks: null };
 }
@@ -212,12 +218,17 @@ function applyMotionToActive() {
     const motionMode = modeEl ? modeEl.getAttribute('data-motion-mode') : 'auto';
     // captured motions carry a real trajectory field — geometry deformation
     // unless the artwork marks the selected object as structurally rigid.
+    // (Step 10) waveModeFrom records WHICH evidence decided the deform mode, so a
+    // layer-name regex is never presented as if the artwork had been looked at.
+    // See CLOTH_NAME_HINT in js/regions.js for the full precedence.
     if (motionMode === 'rigid') {
       s.waveMode = false;
+      s.waveModeFrom = 'artwork_rigid';
     } else if (s.kind === 'svg' && m.trajectories && m.trajectories.length && !(m.params && m.params.leafFall)) {
       s.waveMode = true;
+      s.waveModeFrom = 'motion_field';
     }
-    if (m.params && m.params.leafFall) s.waveMode = false;
+    if (m.params && m.params.leafFall) { s.waveMode = false; s.waveModeFrom = 'preset_leaffall'; }
     // switching motions invalidates deformation caches
     if (s.wrap) {
       for (const el of s.wrap.querySelectorAll('path[data-ms-d0]')) el.setAttribute('d', el.getAttribute('data-ms-d0'));
@@ -243,7 +254,11 @@ let currentScene = 'poster';
 // file-based scenes: fetched from disk and loaded through the same SVG path as
 // an uploaded artwork (so the .layer[data-name] contract makes objects selectable)
 const FILE_SCENES = {
-  train: 'assets/scenes/train-window-adobe.svg',
+  // `train` has no scene tab (it was removed from the UI); the entry stays so
+  // loadScene('train') still works from the console. The file moved to
+  // assets/Artwork/ and this path had been left pointing at the old location,
+  // where it 404'd into "Could not load that scene."
+  train: 'assets/Artwork/train-window-adobe.svg',
   character: 'assets/scenes/character-bear.svg',
 };
 
@@ -356,9 +371,19 @@ function hideInspector() { $('inspector-section').hidden = true; $('inspector-co
 // and lists the artwork's groups/layers as a collapsible tree.
 const layerRowByWrap = new Map();   // ms-wrap element -> its layer row
 
+// (Step 10) the last /label pass over the loaded artwork, or null. Declared here rather
+// than beside its button so showLayers() — which runs at boot — can clear it without
+// depending on declaration order.
+let layerLabelling = null;
+
 function showLayers() {
   const section = $('layers-section');
   if (!section) return;
+  // (Step 10) new artwork invalidates every label — they were about the OLD picture, and
+  // a stale label would auto-apply a swatch to whatever now sits in that layer slot.
+  layerLabelling = null;
+  window.__mlLayerLabels = null;
+  const out = $('autolabel-out'); if (out) out.innerHTML = '';
   const svg = artContainer.querySelector('svg');
   if (!svg) { section.hidden = true; return; }   // raster: no groups to show
   section.hidden = false;
@@ -407,6 +432,19 @@ function buildLayerNode(el, depth) {
   label.textContent = decodeLayerName(el.getAttribute('data-name') || el.id) || '<Group>';
 
   row.append(caret, eye, label);
+  // (Step 10) what the VLM said this layer IS, beside what the file called it. Both are
+  // shown: the point of the feature is that they often disagree, and hiding the file's
+  // name would make an auto-apply impossible to sanity-check.
+  const lab = layerLabelling && layerLabelling.byEl.get(el);
+  if (lab) {
+    const badge = document.createElement('span');
+    badge.className = 'layer-class' + (lab.motion_class ? '' : ' static');
+    badge.textContent = lab.motion_class ? `${lab.label} · ${lab.motion_class}` : `${lab.label} · static`;
+    badge.title = `VLM: ${lab.label} — ${lab.motion_class || 'should not move'} `
+                + `(${Math.round(lab.confidence * 100)}%, ${lab.deforms})`
+                + (lab.notes ? `\n${lab.notes}` : '');
+    row.appendChild(badge);
+  }
   node.appendChild(row);
 
   const wrap = el.closest('.ms-wrap');
@@ -573,21 +611,13 @@ function renderVideoList() {
     vid.play().catch(() => {});
   });
 }
-// synthetic downward motion field so the extraction moment plays over any
-// falling-leaves clip even without the analysis service running
-function synthFallTrajectories() {
-  const G = 12, F = 20, tracks = [];
-  for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) {
-    const x0 = (gx + 0.5) / G, y0 = (gy + 0.5) / G, seed = gx * 7 + gy * 13;
-    const tr = [];
-    for (let f = 0; f < F; f++) {
-      const p = f / (F - 1);
-      tr.push([x0 + 0.03 * Math.sin(p * 6 + seed), y0 + p * 0.42]);
-    }
-    tracks.push(tr);
-  }
-  return tracks;
-}
+// (Step 10) synthFallTrajectories() used to live here: a hand-written sine-and-fall
+// field that js/upload.js played over any clip whose FILENAME matched /leaf|autumn/,
+// then saved as a motion called "Autumn Fall". It is gone, along with the filename
+// branch that used it. A falling-leaves clip now goes through the same VLM route ->
+// RAFT -> distill path as everything else, and what the user sees animated is what was
+// measured. The hand-tuned leaf behaviour survives ONLY as a named preset in
+// js/motions.js, where it is honestly labelled as one.
 $('motion-input').onchange = (e) => window.handleMotionUpload(e);
 
 // =========================================================================
@@ -670,6 +700,113 @@ if (btnJudgeRevert) btnJudgeRevert.onclick = () => {
 };
 
 // =========================================================================
+//  Auto-label the artwork's layers (Step 10) — one vision call, on demand
+// =========================================================================
+// The result is parked on window.__mlLayerLabels so js/regions.js can consult it when a
+// NEW selection is created (a label beats the layer-name regex, see CLOTH_NAME_HINT) and
+// js/upload.js can auto-apply against it. A global rather than a parameter because both
+// of those run from outside this IIFE, on paths the user drives, not on a call chain.
+const esc = s => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+function paintAutoLabel(state) {
+  const el = $('autolabel-out');
+  if (!el) return;
+  if (state.busy) { el.innerHTML = `<div class="judge-busy">${esc(state.busy)}</div>`; return; }
+  if (state.error) { el.innerHTML = `<div class="judge-err">${esc(state.error)}</div>`; return; }
+  const labs = state.labels || [];
+  const moving = labs.filter(l => l.motion_class);
+  el.innerHTML = `
+    <div class="judge-meta">${labs.length} layer${labs.length === 1 ? '' : 's'} labelled —
+      ${moving.length} could move, ${labs.length - moving.length} left static.</div>
+    ${labs.length ? `<ul class="judge-obs">${labs.map(l => `<li>${esc(l.label)} —
+      <b>${esc(l.motion_class || 'static')}</b> ${Math.round(l.confidence * 100)}%
+      ${l.motion_class ? `(${esc(l.deforms)})` : ''}</li>`).join('')}</ul>` : ''}
+    ${(state.warnings || []).length
+      ? `<div class="judge-meta">${state.warnings.map(esc).join(' · ')}</div>` : ''}`;
+}
+
+/* Run one labelling pass over the loaded SVG. Returns the labelling, or null.
+   `groupsOf` is layerGroups — the same tree walk the Layers panel draws from, handed to
+   autolabel.js so "what counts as a layer" has one definition. */
+async function runAutoLabel() {
+  const svg = artContainer.querySelector('svg');
+  if (!svg) { paintAutoLabel({ error: 'auto-label needs a vector artwork (SVG).' }); return null; }
+  const res = await window.MotionAutoLabel.label({
+    svg, animator, capture, groupsOf: layerGroups,
+    onStatus: msg => paintAutoLabel({ busy: msg }),
+  });
+  if (res.error) { paintAutoLabel(res); return null; }
+  layerLabelling = res;
+  window.__mlLayerLabels = res;
+  // labels the VLM gave for layers the user has ALREADY selected: adopt them now rather
+  // than only on the next click, so the panel and the regions agree immediately.
+  for (const s of sel.selections || []) {
+    if (!s.wrap) continue;
+    const lab = [...res.byEl.entries()].find(([el]) =>
+      el === s.wrap || el.contains(s.wrap) || s.wrap.contains(el));
+    if (!lab) continue;
+    s.layerLabel = lab[1];
+    if (lab[1].label) s.name = lab[1].label;
+    // waveMode is only overwritten when nothing stronger decided it: a captured motion
+    // with a real trajectory field is direct evidence and outranks a still-image reading.
+    if (s.waveModeFrom !== 'motion_field' && s.waveModeFrom !== 'artwork_rigid') {
+      s.waveMode = lab[1].deforms === 'mesh';
+      s.waveModeFrom = `vlm:${lab[1].motion_class || 'static'}`;
+    }
+  }
+  paintAutoLabel(res);
+  renderLayers(svg);
+  renderChips();
+  if (sel.mode === 'svg') sel._renderSVGHighlights();
+  const a = sel.getActive(); if (a) showInspector(a);
+  return res;
+}
+
+const btnAutoLabel = $('btn-autolabel');
+if (btnAutoLabel) btnAutoLabel.onclick = async () => {
+  btnAutoLabel.disabled = true;
+  try {
+    const res = await runAutoLabel();
+    if (res) {
+      const moving = res.labels.filter(l => l.motion_class).length;
+      status(`Labelled ${res.labels.length} layers — ${moving} can take motion. `
+             + 'Upload a clip and its swatches will land on the right objects.', true);
+    }
+  } catch (e) {
+    paintAutoLabel({ error: e.message });
+    status(`Auto-label failed: ${e.message}`);
+  } finally {
+    btnAutoLabel.disabled = false;
+  }
+};
+
+/* Auto-apply, for js/upload.js: label the artwork if it has not been labelled yet, then
+   put each motion on the layer its class matches. Returns {applied, skipped} — and
+   applies NOTHING when there are no labels, rather than guessing from names. */
+async function autoApplyMotions(motions) {
+  const svg = artContainer.querySelector('svg');
+  if (!svg) return { applied: [], skipped: [], reason: 'auto-apply needs a vector artwork (SVG).' };
+  if (!motions.length) return { applied: [], skipped: [] };
+  if (!layerLabelling) await runAutoLabel();
+  // runAutoLabel already painted the reason into #autolabel-out; hand it to the caller too
+  // so the upload status can say WHY nothing was applied instead of going quiet.
+  if (!layerLabelling) {
+    return { applied: [], skipped: motions.map(m => ({ motionId: m.id, why: 'no layer labels' })),
+             reason: 'The artwork could not be labelled, so nothing was auto-applied —' };
+  }
+  const res = await window.MotionAutoLabel.apply({
+    motions, labelling: layerLabelling, sel, library, animator, applyMotionToActive,
+  });
+  if (res.applied.length) {
+    renderChips();
+    if (sel.mode === 'svg') sel._renderSVGHighlights();
+    const a = sel.getActive(); if (a) showInspector(a);
+  }
+  return res;
+}
+
+// =========================================================================
 //  Upload artwork
 // =========================================================================
 $('btn-upload-art').onclick = () => $('art-input').click();
@@ -724,6 +861,6 @@ window.__ms = { sel, library, animator, loadScene, loadUploadedSVG, loadRasterIm
 // function-scoped — a separate <script> can't see them. Hand them across explicitly
 // (upload.js destructures window.__mlUpload at call time).
 window.__mlUpload = { $, status, capture, library, sel, renderMotionList,
-  addVideoThumb, synthFallTrajectories, showInspector, applyMotionToActive };
+  addVideoThumb, showInspector, applyMotionToActive, autoApplyMotions };
 
 })();

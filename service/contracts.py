@@ -961,3 +961,132 @@ def judge_best(history):
         if s > score:
             best, score = i, s
     return best
+
+
+# ── Contract D: layer labels (Step 10 — what is IN the artwork) ─────────────
+#
+# Contract A answers "what moves in this clip". This answers the other half of
+# auto-apply: "what is each object in the drawing", so an extracted swatch can be
+# matched to the thing it belongs on. It is what retires layer-name guessing — a
+# regex on `/flag|banner|cloth/` is a claim about a *filename*, not about the artwork.
+#
+# Three decisions, each one a trap avoided:
+#
+# 1. The field is `motion_class`, NOT `class`. It uses Contract A's vocabulary but it
+#    is a WEAKER claim: Contract A observed motion across frames, this one predicts
+#    what a STILL drawing would plausibly do if it moved. Naming both `class` would
+#    let a prediction be compared against an observation as if they were the same
+#    evidence. `confidence_of` says so in the payload too.
+#
+# 2. `motion_class` may be "" and that is not an error. Most layers in an
+#    illustration — background, ground, sky, a signature — should not move at all.
+#    Forcing a choice from six classes would make the model label the sky as `fluid`,
+#    and auto-apply would then animate it. An empty class means "leave this alone".
+#
+# 3. `deforms` is DERIVED here from the class, never asked. A model that answered
+#    class=cloth + deforms=rigid would be self-contradictory and the caller would
+#    have to break the tie anyway; deriving it means the tie cannot arise.
+LAYER_DEFORMS = ("mesh", "rigid")
+
+# Which classes need the geometry itself bent (a flag has to ripple; a bird has to
+# stay a bird and be moved). This is the honest replacement for the browser's
+# `waveMode` name regex — same decision, made from what the artwork depicts.
+MESH_CLASSES = ("cloth", "fluid")
+
+LAYER_CONFIDENCE_OF = "depicts_this_class"   # not "moves this way" — see note 1
+
+
+def deforms_for(motion_class):
+    """'mesh' if this class needs the path geometry bent, else 'rigid'."""
+    return "mesh" if motion_class in MESH_CLASSES else "rigid"
+
+
+def empty_layer_labels(art=None):
+    return {"version": SCHEMA_VERSION, "kind": "layer_labels", "art": art or {},
+            "confidence_of": LAYER_CONFIDENCE_OF, "labels": [], "warnings": []}
+
+
+def normalize_layer_labels(raw, ids, art=None):
+    """Coerce a raw VLM layer-labelling into Contract D. Returns (contract, warnings).
+
+    `ids` is the caller's layer ids. Two rules make the result safe to act on:
+      * a label for an id the caller did NOT send is dropped — the model cannot invent
+        a layer to animate, and an id typo would otherwise silently target nothing;
+      * an id the model skipped simply gets no entry. The caller keeps its own name and
+        its own default; absence is reported, not filled in with a guess.
+    """
+    warnings = []
+    known = list(dict.fromkeys(str(i) for i in (ids or [])))
+    known_set = set(known)
+    out, seen = [], set()
+    for i, lab in enumerate(raw.get("labels", []) if isinstance(raw, dict) else []):
+        if not isinstance(lab, dict):
+            warnings.append(f"label #{i} not an object; skipped")
+            continue
+        lid = str(lab.get("id", ""))
+        if lid not in known_set:
+            warnings.append(f"label #{i} names unknown layer {lid!r}; skipped")
+            continue
+        if lid in seen:
+            warnings.append(f"layer {lid!r} labelled twice; kept the first")
+            continue
+        seen.add(lid)
+        cls = str(lab.get("motion_class", "") or "").strip().lower()
+        if cls in ("none", "static", "null"):
+            cls = ""                       # the model spelling "nothing moves" as a word
+        if cls and cls not in MOTION_CLASSES:
+            warnings.append(f"layer {lid!r} unknown motion_class {cls!r}; "
+                            "treated as 'should not move'")
+            cls = ""
+        conf = _clamp01(_as_float(lab.get("confidence", 0.5), 0.5))
+        out.append({
+            "id": lid,
+            "label": str(lab.get("label", ""))[:80],
+            "motion_class": cls,
+            "applicator": applicator_for(cls) or "",
+            "deforms": deforms_for(cls),
+            "confidence": round(conf, 3),
+            "notes": str(lab.get("notes", ""))[:240],
+        })
+    missing = [i for i in known if i not in seen]
+    if missing:
+        warnings.append(f"{len(missing)} layer(s) came back unlabelled: "
+                        + ", ".join(missing[:8]) + ("…" if len(missing) > 8 else ""))
+    res = empty_layer_labels(art)
+    res["labels"] = out
+    res["warnings"] = warnings
+    return res, warnings
+
+
+def match_swatches_to_layers(swatches, labels, conf_min=0.35):
+    """Pair each swatch with the labelled layer it belongs on. Returns (pairs, unmatched).
+
+    `pairs` is [(swatch_index, layer_id)]; `unmatched` is the swatch indices with nowhere
+    to go. Lives here, not in the browser, because it is the rule the whole step rests on
+    and it has to be testable without a DOM.
+
+    The rule is a one-to-one greedy match on CLASS ONLY, best-confidence first:
+      * class equality is the entire criterion. Matching on names would reintroduce
+        exactly the guessing this step removes.
+      * one layer takes at most one swatch, and one swatch lands on at most one layer.
+        Two flags and one cloth swatch means one flag animates; the other is reported as
+        having no swatch rather than sharing one, because a shared swatch would look
+        like two objects moving in lockstep, which is a lie about the source clip.
+      * a layer below `conf_min` is not a candidate at all. A 0.2-confidence guess that
+        the sky is fluid is not evidence enough to animate the sky.
+      * a swatch with no class matches nothing. It is unmatched, not defaulted.
+    """
+    cands = sorted(
+        (l for l in (labels or [])
+         if isinstance(l, dict) and l.get("motion_class") and l.get("confidence", 0) >= conf_min),
+        key=lambda l: -_as_float(l.get("confidence"), 0.0))
+    used, pairs, unmatched = set(), [], []
+    for si, sw in enumerate(swatches or []):
+        cls = str((sw or {}).get("class", "") or "")
+        hit = next((l for l in cands if l["motion_class"] == cls and l["id"] not in used), None)
+        if hit is None:
+            unmatched.append(si)
+        else:
+            used.add(hit["id"])
+            pairs.append((si, hit["id"]))
+    return pairs, unmatched

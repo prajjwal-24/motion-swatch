@@ -1,25 +1,40 @@
 # MotionLife (Motion Swatch) — Project Status
 
-> Round-2 master document. Covers **(1)** what the project is and everything built,
-> **(2)** exactly where and why we hardcoded, and **(3)** what is not working / known
-> limitations. Written to be spoken to honestly in a review. Companion docs:
-> `HARDCODING.md` (hardcoding detail), `IMPLEMENTATION.md` (module spec),
+> Master document, current as of **Step 10** of `docs/BUILD_PLAN.md`. Covers **(1)** what the
+> project is and everything built, **(2)** exactly where and why we hardcoded, and **(3)** what is
+> not working / known limitations. Written to be spoken to honestly in a review.
+>
+> Companion docs: `docs/BUILD_PLAN.md` (the roadmap, with the measurements for each step — **the
+> authoritative record where anything disagrees**), `HARDCODING.md` (hardcoding detail),
+> `docs/ARCHITECTURE_FLOW.md` and `docs/TASK_BREAKDOWN.md` (module/flow detail),
 > `DEMO_SCRIPT.md` (video script), `README.md` (usage).
 
 ---
 
 ## 1. What it is
 
-**MotionLife** captures real-world motion from a short video, distills it into a
-reusable, editable **motion swatch**, and applies it to individual objects in a
-static vector illustration — no keyframes, no rigging. The pitch: *motion becomes
-an asset you paint on, like a color.*
+**MotionLife** captures real-world motion from a short video, distills it into a reusable,
+editable **motion swatch**, and applies it to individual objects in a static vector illustration —
+no keyframes, no rigging. The pitch: *motion becomes an asset you paint on, like a colour.*
 
 Two pieces:
-- **Browser app** — vanilla JS + inline SVG + Canvas 2D. No framework, no bundler.
-  Served with any static server (`python3 -m http.server 8000`).
-- **Analysis service** — FastAPI + **RAFT** deep optical flow (`raft_small`, torchvision).
-  Optional at runtime; the app falls back to an in-browser Lucas–Kanade analyzer.
+- **Browser app** — vanilla JS + inline SVG + Canvas 2D. No framework, no bundler. Served with any
+  static server (`python3 -m http.server 8000`).
+- **Analysis services** — four Python processes, each in its own venv because their dependencies
+  genuinely conflict. `sh start-all.sh` brings them up; `sh start-all.sh status` prints UP/DOWN per
+  port.
+
+| Port | Service | Venv | What it does |
+|---|---|---|---|
+| 8000 | static file server | — | serves the app |
+| 8765 | FastAPI extraction + registry | `service/venv` (3.13) | RAFT / SEA-RAFT / CoTracker3, SAM 2 masking, depth, YOLO+ByteTrack paths, distill, `/engines` |
+| 8770 | MediaPipe Pose | `mpvenv` (3.11) | body motion (MediaPipe needs py ≤ 3.12) |
+| 8771 | VLM router | `routervenv` (3.9) | `/decompose`, `/label`, `/judge` |
+| 8772 | preprocess | `routervenv` | standalone SAM2/depth/camera helper (not called from the browser — see §5) |
+
+Every service is **optional at runtime**: the app degrades and says which one to start. With
+`:8765` down, extraction falls back to an in-browser Lucas–Kanade analyzer; with `:8771` down,
+auto-label and auto-apply report that they did nothing rather than guessing.
 
 ---
 
@@ -27,146 +42,222 @@ Two pieces:
 
 ### App / UX
 - **Upload artwork** — SVG (inline, per-object selectable) or raster (rectangle select).
-- **Layer / object selection** — objects marked `<g class="layer" data-name="…">`
-  become selectable; a Layers panel lists them.
-- **Motion Library** — 8 built-in presets (Waterfall Flow, Cloud Drift, Flag Flutter,
-  Gentle Sway, Water Ripple, Sun Pulse, Falling Leaves, Rising Smoke).
-- **Capture from video** — upload a clip → RAFT extraction → new swatch, shown with an
-  animated "extraction" overlay (flow vectors + the distilled parameters).
+- **Layer / object selection** — objects marked `<g class="layer" data-name="…">` become
+  selectable; a Layers panel lists them. Uploaded SVGs with no usable names get a leaf-element
+  fallback so they are still clickable.
+- **Motion Library** — **9** built-in presets (Waterfall Flow, Cloud Drift, Flag Flutter, Gentle
+  Sway, Water Ripple, Sun Pulse, Falling Leaves, Autumn Fall, Rising Smoke).
+- **Capture from video** — upload a clip → the VLM reads it → the router picks an extractor →
+  new swatch(es), shown with an animated "extraction" overlay (flow vectors + distilled params).
+- **Auto-label the artwork** (`#btn-autolabel`) — one `/label` pass says what each layer depicts.
+- **Auto-apply** — a multi-motion clip's swatches are placed on the objects whose class matches,
+  with the placement and any refusals named in the status line.
+- **Judge & tune** (`#btn-judge`) — renders one cycle, asks the VLM to grade it, applies bounded
+  param deltas, and reverts to the best-scoring pass.
 - **Per-object controls** — Speed, Intensity, Remove motion, Delete region.
-- **Cloth / deform vs. rigid** — driven by the artwork's `data-motion-mode` attribute
-  and object name.
+- **Cloth / deform vs. rigid** — decided by evidence, with the winner recorded in `waveModeFrom`
+  (see §3d).
 - **Play / Pause**, **Preview** (Before | MotionLife | source videos), **Export** (SVG / video).
 
 ### Analysis / engine
-- **RAFT optical flow** → distilled to **8 parameters** (frequency, amplitude,
-  direction, turbulence, damping, phase-spread, driftX, driftY) + a **12×12 trajectory
-  grid** (144 real point-tracks).
+- **Extractor registry** (`service/extractors.py` + `/engines`) — every engine declares what it
+  needs and **probes** for it, so an uninstalled engine reports `False` with a setup hint and the
+  router falls back instead of crashing.
+- **Optical flow / tracking** — `raft_small`, SEA-RAFT, CoTracker3 → 8 distilled parameters
+  (frequency, amplitude, direction, turbulence, damping, phaseSpread, driftX, driftY) + a **12×12
+  trajectory grid** (144 real point-tracks).
+- **Object masking + depth (Step 2)** — SAM 2 seeded by the VLM's bbox replaces the rectangular
+  crop; Depth-Anything-V2-Small gives a depth *rank* over the mask. Both are reported per swatch
+  (`masked 20% (sam2+motion, 38/144 cells tracked) + depth rank 0.4147`).
+- **Body motion** — MediaPipe Pose → Contract B's 13 joints, driving a rigged character.
+- **Object travel paths (Step 5)** — YOLO + ByteTrack tracks one discrete object across the clip.
 - **Region segmentation** (`segment_regions`) for multi-motion clips.
-- **Animation engine** (`js/animate.js`): `computeMotion` (rigid), wave/cloth
-  geometry deformation, trajectory-field replay, **deform-in-place** (subtract mean so
-  flowing objects ripple without sliding away), per-glyph text motion, and
-  **detail-ride** (keep fine detail like a flag's chakra crisp while the cloth ripples).
+- **One swatch contract (Step 7)** — `service/contracts.py` covers texture / skeleton / path
+  payloads in a single schema, shared by every service and self-tested in all four interpreters.
+- **Animation engine** (`js/animate.js`) — class-keyed dispatch, the rigid **MLS mesh warp**,
+  trajectory-field replay, **deform-in-place** (subtract mean so flowing objects ripple without
+  sliding away), per-glyph text motion, **detail-ride** (fine detail like a flag's chakra stays
+  crisp while the cloth ripples), and `_applyPathTravel` for measured travel.
 
-### Name-keyed scenery behaviors (see §3)
-Birds, clouds, river/ripples, boat, tree-canopy, falling-leaves, and flag each have a
-bespoke, hand-tuned behavior.
+### The rule that governs the whole app
+**Real extracted motion wins over curation, everywhere the two could disagree.** A measured travel
+path beats the name-keyed behaviours; a classified swatch beats them too; a measured displacement
+field beats the VLM's still-image reading of a layer; the VLM's reading beats the layer-name regex.
+Each of those precedences is enforced in code and pinned by a test.
 
 ### Assets
-- **Scenes / posters**: `poster.svg` (Independence Day flag), `Autumn*.svg`,
-  `boat-river_layered.svg` (riverside scene, fully layer-labeled), plus
-  `train-window-adobe.svg`, `Scene.svg`, and earlier hand-built scenes.
-- **Source videos** (`assets/videos/`): `flag`, `birds`, `clouds`, `smoke`, `boat`,
-  `boat-night`, `Autumn`.
+- **Artwork** (`assets/Artwork/`): `poster.svg` (Independence Day flag), `Autumn.svg` /
+  `AutumnPoster.svg`, `boat-river_layered.svg` (riverside scene, fully layer-labelled),
+  `riverside-camp.svg`, `Scene.svg`, `train-window-adobe.svg`, `train-window.svg`,
+  `independence-logo.svg`.
+- **Scenes** (`assets/scenes/`): `character-bear.svg`, `character-duck.svg`, `motion-lab.svg`,
+  `test-scene.svg`. The **Poster** and **Scenery** tabs are generated in JS
+  (`createPosterSVG` / `createScenerySVG`), not files.
+- **Source videos** (`assets/videos/`, 9 committed): `Autumn`, `birds`, `boat`, `boat-night`,
+  `clouds`, `flag`, `smoke`, `walk-grid`, `walk-man`. `CompleteDemo.mp4` (734 MB) is deliberately
+  **gitignored** and local-only.
+
+### Tests
+| Suite | Checks | Needs |
+|---|---|---|
+| `service/contracts_selftest.py` | 153 | nothing but the stdlib — runs in all four venvs |
+| `tests/step10-orchestration.js` | 65 | node only |
+| `tests/step10-label.py` | 68 | `routervenv` (no credentials) |
+| `tests/step9-judge-loop.py` | 46 | `routervenv` (no credentials) |
+| `tests/step8-applicators.js` | 47 | node only |
+| `tests/step2-preprocess.py` | 38 | `routervenv` |
+| `tests/step9-sampling.js` | 25 | node only |
+| `tests/step2-field.js` | 14 | node only |
+| `tests/step10-e2e.js` | 20 | **live**: every service up + real VLM calls |
 
 ### Pitch materials
-- **`intro-deck.html`** — animated 9-slide pitch deck (problem → reveal → how-it-works →
-  live-app button) plus a dense **one-frame thumbnail** slide. Live particle-flow
-  background; every slide has its own animation.
-- Voiceover scripts and demo transcripts (in chat / `DEMO_SCRIPT.md`).
+- **`intro-deck.html`** — animated 9-slide pitch deck plus a dense one-frame thumbnail slide.
+- **`architecture.html`**, **`hld.html`** — diagrams. Voiceover scripts in `DEMO_SCRIPT.md`.
 
 ### GitHub
-- Repo: **github.com/prajjwal-24/motion-swatch** (public). All code, assets, and the
-  7 source videos are committed.
+- Repo: **github.com/prajjwal-24/motion-swatch** (public).
 
 ---
 
 ## 3. Where we hardcoded (honest accounting)
 
-**The motion extraction and animation engine are real.** The hardcoding is about
-*which behavior an object gets*, *what a demo clip is called*, and *one fully-synthetic
-capture*. Ranked by how much it matters if a reviewer asks:
+**The extraction, the animation, and the choice of what to animate are all real.** What remains is
+curation of *which cells of a demo clip form a region and what to call it*, some tuned thresholds,
+and two name-based fallbacks that only fire when nothing was measured. Ranked by how much it
+matters if a reviewer asks. Full detail in `HARDCODING.md`.
 
-### 3a. `Autumn Fall` capture is fully synthetic — FRONTEND (`js/main.js`)
-**The biggest one.** If an uploaded video's **filename** matches
-`/leaf|leaves|falling|autumn/i`, the app **skips RAFT entirely**, generates synthetic
-falling-leaf trajectories, and hands back hand-tuned parameters — while still showing
-the animated "extraction" overlay over the video. So for the leaves demo, the
-"extraction" is a visual; no real analysis happens. Rename the file and it goes through
-the real pipeline.
+### 3a. `DEMO_PROFILES` — filename-keyed region layouts (`service/segment.py:296`)
+**The biggest one, and the only filename test left in the repo.** If an uploaded filename contains
+a known keyword (`cherry`, `silk`, `flag`, `wheat`, `ink`, `ocean`, `two_flags`, `bosphorus`, …),
+`segment_regions` uses a **hand-tuned region layout + names** instead of automatic segmentation. It
+still runs the **real** extraction and distillation on those regions — only the region rectangles
+and the labels are curated, and it decides nothing about which object a swatch is applied to.
+Longest matching key wins. Rename the file and it goes through the fully automatic path.
 
-### 3b. Name-keyed scenery behaviors — FRONTEND (`js/animate.js`)
-Whenever a motion is applied to an object whose **name** matches a keyword, the animator
-runs a **bespoke synthetic behavior** instead of replaying the captured motion:
+### 3b. Name-keyed scenery behaviours — **preset-only fallback** (`js/animate.js:103-115`)
+Four regexes select bespoke synthetic behaviours from the object's **name**. Since Step 8 they are
+gated behind `if (!app)` — **a classified swatch never reaches them.** They run only for the
+built-in presets and the in-browser Lucas–Kanade fallback, which carry no class and no captured
+field, so there is nothing real to prefer over them.
 
-| Object name matches | Hardcoded behavior | Uses captured params? |
+| Object name matches | Fallback behaviour | Uses captured params? |
 |---|---|---|
 | `birds` | Wing-flap (vertical scale) + split left/right gentle drift | speed/intensity only |
 | `clouds` | Slow one-directional wind drift + subtle edge billow | speed/intensity only |
-| `river` / `ripples` | Smooth laminar traveling-wave flow | frequency, amplitude |
-| `boat` / `rowboat` / … | Gentle rigid bob + rock (floats on ripples) | frequency, amplitude |
-| `flag` / `banner` / … | Coherent pole-anchored multi-fold wave (ignores raw field) | frequency, amplitude |
-| `tree-canopy` (role) | Gentle sway | preset |
-| `leafFall` param | Per-leaf independent fall/tumble/wrap | synthetic |
+| `river` / `ripples` | Smooth laminar travelling-wave flow | frequency, amplitude |
+| `boat` / `rowboat` / `canoe` / `ferry` / `ship` | Gentle rigid bob + rock | frequency, amplitude |
 
-**Implication to state plainly:** for these scenery objects, the captured video mostly
-triggers a *preset-style* behavior — the object animates its hardcoded way regardless of
-which swatch is dropped on it. "Apply the *exact* motion you captured" is only literally
-true for generic objects that go through the real wave / trajectory-field path.
+Two more are role- or param-keyed rather than name-keyed, and are not gated because they *are* the
+declared behaviour: `[data-motion-role="tree-canopy"]` sways its selectable overlay so dense canopy
+artwork stays intact, and `params.leafFall` (the `autumn-fall` **preset**) runs the per-leaf
+fall/tumble/wrap.
 
 > **Bird wing-flap is synthetic — do NOT advertise it as extracted from the video.**
 
-### 3c. `DEMO_PROFILES` — filename-keyed region layouts (`service/server.py`)
-If an uploaded filename contains a known keyword (`cherry`, `silk`, `flag`, `wheat`,
-`ink`, `ocean`, `two_flags`, `bosphorus`, …), the service uses a **hand-tuned region
-layout + names** instead of automatic segmentation. It still runs **real RAFT
-extraction** on those regions — only the region rectangles and labels are curated.
+The old cloth `/flag|banner|pennant|ensign|standard/` regex is **gone**: the rigid MLS mesh warp
+cut local shape distortion ~3× (27% → 9% median on flag.mp4), which is what made captured motion
+usable on a flag without a synthetic stand-in.
 
-### 3d. Preprocessed artwork
-- **`train-window-adobe.svg`** — Illustrator flattened all layer names on export; we
-  ran a one-time script to identify each object by geometry/color and wrap it into named
-  `.layer` groups. Rendering is byte-identical; only structure changed.
-- **`boat-river_layered.svg`** — every group hand-labeled with `data-name` +
-  `data-motion-mode`, plus occlusion clip-groups (smoke behind foliage, etc.).
+### 3c. Preprocessed artwork
+- **`train-window-adobe.svg`** — Illustrator flattened all layer names on export; a one-time script
+  identified each object by geometry/colour and wrapped it into named `.layer` groups. Rendering is
+  byte-identical; only structure changed. Its scene **tab** was removed from the UI.
+- **`boat-river_layered.svg`** — every group hand-labelled with `data-name` + `data-motion-mode`,
+  plus occlusion clip-groups (smoke behind foliage, etc.).
+
+Since Step 10 the app no longer *acts* on these names: `/label` reads the pixels, and placement is
+class equality. The names are a convenience for a human reading the file.
+
+### 3d. The cloth-mode name hint — **gated last resort** (`js/regions.js:54`)
+`/flag|banner|cloth|pennant|curtain|sail/i` decides whether a region's geometry is bent or moved
+rigidly, from the layer name. It is now the last thing consulted, and every selection records what
+decided it in `waveModeFrom`: `preset_leaffall` → `artwork_rigid` → `motion_field` → `vlm:<class>` →
+`name_hint` → `default`. `motion_field` outranks `vlm:<class>` deliberately — a measured
+displacement field beats a still-image reading. Kept rather than deleted because with the router
+offline it is the only answer available, and a flag that does not ripple is a worse failure than an
+honest guess.
 
 ### 3e. Tuning constants
-Segmenter thresholds (`ANALYSIS_WIDTH`, `REGION_KEEP_FRAC`, `ABS_FLOOR`, …) and the
-wave constants (`WAVE_CYCLES`, `WAVE_AMP_PX`, `DETAIL_FRAC`, …) are hand-picked, not
-faked outputs.
+Segmenter thresholds (`ANALYSIS_WIDTH` 480, `REGION_KEEP_FRAC` 0.25, `ABS_FLOOR`, `PEAK_FRAC`,
+`DRIFT_DOM`, …), the wave constants (`WAVE_AMP_PX` 12, `WAVE_CYCLES`, …), the cost caps
+(`LABEL_MAX_LAYERS` 12, `LABEL_CROP_W` 256), the evidence floor (`CONF_MIN` / `LABEL_CONF_MIN`
+0.35), and the judge's stop rules (`JUDGE_MAX_ITERS` 3, `JUDGE_GOOD` 0.8, `JUDGE_MIN_GAIN` 0.03)
+are hand-picked thresholds, not faked outputs. Each is cited with its reasoning where it is
+defined, and every cap is *reported* rather than applied silently.
+
+### 3f. Removed since the last revision of this document
+- **The synthetic `Autumn Fall` capture** (was in `js/upload.js`): a `/leaf|leaves|falling|autumn/i`
+  filename test that skipped extraction, played the "extraction" overlay over the real video, and
+  returned a hand-written spiral plus eight hand-tuned dials captioned *"Captured from
+  falling-leaves video"*. **Deleted at Step 10**; the same clip now routes like anything else. The
+  hand-tuned leaf look survives only as the labelled `autumn-fall` **preset**.
+- **The cloth applicator name regex** (§3b).
+- **Layer-name matching for placement** (§3c).
 
 ---
 
 ## 4. What IS genuinely real
-- RAFT optical-flow extraction on any uploaded video **that isn't caught by 3a** and
-  reaches the service.
-- Distillation to the 8 parameters + 12×12 trajectory grid.
-- The animation primitives: wave/cloth deformation, trajectory-field replay,
-  deform-in-place, per-glyph text, detail-ride (crisp chakra).
+- Optical-flow / point-tracking extraction on **any** uploaded video that reaches the service —
+  there is no longer a clip that bypasses it.
+- Distillation to the 8 parameters + the 12×12 trajectory grid; SAM 2 masking and depth rank.
+- The VLM's three jobs: reading the clip (`/decompose`), reading the artwork (`/label`), grading the
+  result (`/judge`) — all real model calls on real images, with forced tool calls so there is no
+  prose to parse.
+- Class-keyed **application** (which animator runs) and class-keyed **placement** (which object it
+  lands on).
+- The animation primitives: the MLS mesh warp, trajectory-field replay, deform-in-place, per-glyph
+  text, detail-ride, measured path travel.
 - Object selection / the `.layer` contract; Speed / Intensity; Preview; Export.
-- The coherent flag wave *is* driven by the captured clip's frequency & amplitude.
 
 ---
 
 ## 5. What is NOT working / known limitations
 
-1. **Bird wing-flap and Autumn Fall are synthetic**, not extracted (see 3a, 3b).
-   Present them as "the object animates naturally," never "extracted from the clip."
-2. **Scenery objects ignore the captured motion's character.** The swatch triggers a
-   name-keyed preset. The demo's "apply the *exact* motion" line is only fully honest
-   for the flag (freq/amp-driven) and generic wave objects.
-3. **RAFT can't see thin or smooth motion** — light rain and smooth slow-mo water
-   extract amplitude ≈ 0. We drop them rather than invent a region (honest, but it
-   means some clips "don't work").
-4. **Auto-segmentation of complex 3–4-motion clips is unreliable** at demo resolution
-   (480 px) — `DEMO_PROFILES` (3c) compensates for the curated demo clips only.
-5. **Arbitrary uploaded SVGs need pre-labeled layers.** A raw Illustrator export with
-   flattened names only yields coarse (whole-group) selection until preprocessed.
-6. **Train-window "scenery moves backward" parallax is not built.** It needs bulk
-   directional travel with looping/oversized content; the current deform-in-place logic
-   intentionally suppresses bulk drift.
-7. **`CompleteDemo.mp4` has a long black tail** — real content ends ~2:15 of a 4:24 file;
-   trim before combining.
-8. **Browser caching** — JS changes require bumping the `?v=NN` query string in
-   `index.html` or a hard-refresh, or the browser serves stale scripts.
-9. **Large source video in repo** — `birds.mp4` is 82 MB (over GitHub's 50 MB soft
-   warning; under the 100 MB hard limit). Fine, but noted.
+1. **Bird wing-flap and the `autumn-fall` preset are synthetic**, not extracted. They now only run
+   for presets and unclassified motions (§3b), but present them as "the object animates naturally,"
+   never "extracted from the clip."
+2. **Presets ignore the captured motion's character** — by definition; that is what a preset is.
+   For a *captured* swatch the claim "apply the exact motion you captured" is literally true: the
+   field drives the mesh warp.
+3. **Optical flow can't see thin or smooth motion** — light rain and smooth slow-mo water extract
+   amplitude ≈ 0. We drop them rather than invent a region (honest, but some clips "don't work").
+4. **Auto-segmentation of complex 3–4-motion clips is unreliable** at 480 px; `DEMO_PROFILES`
+   compensates for the curated demo clips only.
+5. **`/label` is capped at 12 layers** and sees each layer as an isolated crop with no
+   relationships between them, so "the flag *on* the pole" is two independent readings. A busier
+   illustration gets the first 12 **plus a warning**, not a silent partial answer. The model's class
+   for a thin cloud is genuinely unstable across runs (`cloth` 55% one run, `fluid` 55% the next).
+6. **The judge is not auto-chained.** "Judged & tuned" is a separate deliberate button press,
+   because a 3-iteration VLM loop firing on every upload is a cost the user should choose. A
+   `wrong_class` verdict stops the loop honestly but nothing re-routes or re-extracts.
+7. **`:8772` (preprocess) is not called from the browser.** It works and is tested, but the browser
+   reaches masking through `preprocess=1` on `:8765` instead — so the standalone service is
+   currently only useful from the CLI.
+8. **Step 6 (text → motion) is not built.** `service/extractors.py` has an `mdm` row that still
+   advertises MDM/MotionGPT while what is vendored is `momask-codes`; there is no `service/t2m.py`
+   and no gate test yet. Nothing routes to it, so it cannot silently produce a fake swatch — but
+   the registry row is misleading until retargeted.
+9. **The mesh warp is as-rigid-as-possible, not rigid.** 33% p95 residual is a reduction, not an
+   elimination; above ~1.8× the lattice spacing the lattice folds and the warp tears. Real captured
+   amplitudes are 0.02–0.1, the range it was measured in.
+10. **Judge sessions are in-memory**, so restarting the router forgets a tuning run in progress.
+11. **`train-window` backward-parallax is not built.** It needs bulk directional travel with
+    looping/oversized content; deform-in-place intentionally suppresses bulk drift.
+12. **Browser caching** — JS changes require bumping the `?v=NN` query string in `index.html`
+    (19 hand-maintained refs) or a hard-refresh, or the browser serves stale scripts.
+13. **Large source video in repo** — `birds.mp4` is 82 MiB (over GitHub's 50 MB soft warning; under
+    the 100 MB hard limit). `CompleteDemo.mp4` (734 MB) is gitignored and local-only; its real
+    content ends ~2:15 of a 4:24 file, so trim before combining.
 
 ---
 
 ## 6. One-line answer for reviewers
 
-> "The optical-flow extraction and the animation engine are real. What's curated is
-> which behavior each scenery object gets, what we name certain demo clips, one artwork
-> whose layers we re-labeled after Illustrator stripped them, and the falling-leaves
-> capture, which is fully synthetic. Rename a clip or use a generic object and it runs
-> through the real pipeline."
+> "The extraction, the animation, and the *choice of what to animate* are all real. It runs optical
+> flow or point tracking on your clip, masks it to the object SAM 2 found, and applies the measured
+> field; a VLM looks at your artwork and says what each layer depicts, and swatches are placed by
+> matching motion **class** — not by layer name. We proved that by relabelling every layer to
+> `Layer 7` / `path2854` and re-running against the live model: 11 of 12 objects were still
+> identified from the pixels alone. What's still curated is which cells of certain demo clips form a
+> region and what those regions are called, a handful of tuned thresholds, and two name-based
+> fallbacks that only fire when nothing was measured."

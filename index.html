@@ -7,7 +7,7 @@
 <link rel="icon" href="data:,">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <script>(function(){var t=localStorage.getItem('ml-theme')||'dark';document.documentElement.setAttribute('data-theme',t);})();</script>
-<link rel="stylesheet" href="css/style.css?v=51">
+<link rel="stylesheet" href="css/style.css?v=54">
 </head>
 <body>
 <header>
@@ -121,6 +121,13 @@
 
       <div class="panel-section" id="layers-section" hidden>
         <h2>Layers</h2>
+        <p class="judge-hint">Auto-label asks the VLM what each layer of the artwork
+          actually depicts, so extracted motion can be applied by what an object IS
+          rather than by what its layer is called. One vision call per press.</p>
+        <div class="insp-actions">
+          <button id="btn-autolabel">Auto-label layers</button>
+        </div>
+        <div id="autolabel-out"></div>
         <div id="layers-list"></div>
       </div>
     </div>
@@ -133,22 +140,23 @@
 
 <button id="theme-toggle" class="theme-toggle" title="Toggle light / dark theme" aria-label="Toggle theme">☀️</button>
 
-<script src="js/flow.js?v=51"></script>
-<script src="js/distill.js?v=51"></script>
-<script src="js/motions.js?v=51"></script>
-<script src="js/scenery.js?v=51"></script>
-<script src="js/poster.js?v=51"></script>
-<script src="js/regions.js?v=51"></script>
-<script src="js/motionfields.js?v=51"></script>
-<script src="js/animate.js?v=51"></script>
-<script src="js/export.js?v=51"></script>
-<script src="js/videoexport.js?v=51"></script>
-<script src="js/extractviz.js?v=51"></script>
-<script src="js/multipick.js?v=51"></script>
-<script src="js/skeletonviz.js?v=51"></script>
-<script src="js/capture.js?v=51"></script>
-<script src="js/judge.js?v=51"></script>
-<script src="js/upload.js?v=51"></script>
-<script src="js/main.js?v=51"></script>
+<script src="js/flow.js?v=54"></script>
+<script src="js/distill.js?v=54"></script>
+<script src="js/motions.js?v=54"></script>
+<script src="js/scenery.js?v=54"></script>
+<script src="js/poster.js?v=54"></script>
+<script src="js/regions.js?v=54"></script>
+<script src="js/motionfields.js?v=54"></script>
+<script src="js/animate.js?v=54"></script>
+<script src="js/export.js?v=54"></script>
+<script src="js/videoexport.js?v=54"></script>
+<script src="js/extractviz.js?v=54"></script>
+<script src="js/multipick.js?v=54"></script>
+<script src="js/skeletonviz.js?v=54"></script>
+<script src="js/capture.js?v=54"></script>
+<script src="js/autolabel.js?v=54"></script>
+<script src="js/judge.js?v=54"></script>
+<script src="js/upload.js?v=54"></script>
+<script src="js/main.js?v=54"></script>
 </body>
 </html>
