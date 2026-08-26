@@ -67,6 +67,45 @@ function computeMotion(params, seed, t, intensity = 1) {
  *
  * buildTrajField(motion) → sampler(u, v, t) -> {dx, dy} in unit-square units
  */
+/* Per-track peak displacement, and the largest of them.
+   `rel` is displacement-from-start per track: [track][frame][dx, dy]. */
+function trackEnergy(rel) {
+  const per = rel.map(tr => {
+    let e = 0;
+    for (const p of tr) { const m = Math.hypot(p[0], p[1]); if (m > e) e = m; }
+    return e;
+  });
+  return { per, max: per.length ? Math.max(...per) : 0 };
+}
+
+/* [x0, x1, y0, y1] grid-cell window holding the tracks that actually moved, with one
+   cell of margin so the moving band is shown with its edge rather than cropped to it.
+
+   Two callers need this and must agree: the field replay below (which maps the target
+   object onto the window so no part of the artwork samples static background) and the
+   swatch chip in main.js (which subsamples 5x5 for the preview). They matter more now
+   than they used to — a field can be mostly frozen ON PURPOSE, because the Step 2
+   object mask and segment.py's regions both pin out-of-object cells to their start
+   point, so a frame-wide lattice can legitimately sample 25 stationary cells.
+
+   Falls back to the whole grid when nothing crosses the threshold, so a static field
+   still yields a valid (if motionless) window instead of an inverted one. */
+function activeCellWindow(rel, G) {
+  const { per, max } = trackEnergy(rel);
+  if (!(max > 0.002)) return [0, G - 1, 0, G - 1];
+  const thresh = Math.max(0.004, max * 0.25);
+  let x0 = G - 1, x1 = 0, y0 = G - 1, y1 = 0;
+  for (let gy = 0; gy < G; gy++)
+    for (let gx = 0; gx < G; gx++)
+      if (per[gy * G + gx] >= thresh) {
+        if (gx < x0) x0 = gx; if (gx > x1) x1 = gx;
+        if (gy < y0) y0 = gy; if (gy > y1) y1 = gy;
+      }
+  if (x1 < x0 || y1 < y0) return [0, G - 1, 0, G - 1];
+  return [Math.max(0, x0 - 1), Math.min(G - 1, x1 + 1),
+          Math.max(0, y0 - 1), Math.min(G - 1, y1 + 1)];
+}
+
 function buildTrajField(motion) {
   // The raw field is preferred when it's here (it is strictly more samples), but a swatch
   // is a complete standalone source: `tracks` + its own `fps` (already divided by the
@@ -90,39 +129,40 @@ function buildTrajField(motion) {
     return tr.map(p => [p[0] - x0, p[1] - y0]);
   });
 
+  // FROZEN CELLS: the service deliberately pins a track to its start position when the
+  // cell is outside the object — an object mask (Step 2) or a segmented region
+  // (segment.py). Such a track is a statement that nothing was measured there, NOT a
+  // measurement of zero, so it must stay out of every average below. Detected before
+  // the mean subtraction, because subtracting a mean makes a frozen track look alive.
+  const live = disp.map(tr => tr.some(p => p[0] !== 0 || p[1] !== 0));
+  const nLive = live.reduce((n, l) => n + (l ? 1 : 0), 0);
+  if (nLive < 4) return null;                              // not enough field left to replay
+
   // DEFORM-IN-PLACE: a flowing river / rippling silk has a strong bulk drift —
   // every point travels the same way, so replaying it raw would slide the
   // WHOLE object off its bed and leave the region empty. Subtract the
   // per-frame mean displacement so only the *relative* motion remains: the
   // surface ripples and flows in place, the shape stays where it belongs.
+  // The mean is over LIVE tracks only. Dividing by all 144 instead under-subtracted the
+  // drift by 144/nLive — on an 8-live-cell masked field that is 18x, enough to slide the
+  // shape clean off its bed. Identical arithmetic when nothing is frozen.
   for (let fi = 0; fi < T; fi++) {
     let mx = 0, my = 0;
-    for (let c = 0; c < disp.length; c++) { mx += disp[c][fi][0]; my += disp[c][fi][1]; }
-    mx /= disp.length; my /= disp.length;
-    for (let c = 0; c < disp.length; c++) { disp[c][fi][0] -= mx; disp[c][fi][1] -= my; }
+    for (let c = 0; c < disp.length; c++) {
+      if (live[c]) { mx += disp[c][fi][0]; my += disp[c][fi][1]; }
+    }
+    mx /= nLive; my /= nLive;
+    for (let c = 0; c < disp.length; c++) {
+      if (live[c]) { disp[c][fi][0] -= mx; disp[c][fi][1] -= my; }
+    }
   }
 
   // ACTIVE REGION: the moving object usually fills only part of the video
   // frame (a flag against sky, waves in the lower half). Find the grid cells
   // with real motion and map the target object onto that window only —
   // otherwise parts of the artwork would sample static background and freeze.
-  const energy = disp.map(tr => {
-    let e = 0;
-    for (const p of tr) { const m = Math.hypot(p[0], p[1]); if (m > e) e = m; }
-    return e;
-  });
-  const eMax = Math.max(...energy);
-  if (eMax < 0.002) return null;                           // nothing moved
-  const thresh = Math.max(0.004, eMax * 0.25);
-  let x0g = G - 1, x1g = 0, y0g = G - 1, y1g = 0;
-  for (let gy = 0; gy < G; gy++)
-    for (let gx = 0; gx < G; gx++)
-      if (energy[gy * G + gx] >= thresh) {
-        if (gx < x0g) x0g = gx; if (gx > x1g) x1g = gx;
-        if (gy < y0g) y0g = gy; if (gy > y1g) y1g = gy;
-      }
-  x0g = Math.max(0, x0g - 1); x1g = Math.min(G - 1, x1g + 1);
-  y0g = Math.max(0, y0g - 1); y1g = Math.min(G - 1, y1g + 1);
+  if (trackEnergy(disp).max < 0.002) return null;          // nothing moved
+  const [x0g, x1g, y0g, y1g] = activeCellWindow(disp, G);
   const spanX = Math.max(1, x1g - x0g), spanY = Math.max(1, y1g - y0g);
   // active window size in frame units — displacements are normalized by this
   // so motion is proportional to the OBJECT, not the video frame

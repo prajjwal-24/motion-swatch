@@ -18,10 +18,10 @@ def _log(msg):
     print(msg, file=sys.stderr, flush=True)   # flush so it shows live in the service log
 
 
-from config import DEVICE
+from config import DEVICE, GRID
 from video_io import read_frames, _crop_frames, align_mask
 from flow import ENGINE, raft_flow_series
-from distill import distill, grid_trajectories
+from distill import distill, grid_trajectories, track_cells, TRACK_CELL_FLOOR
 from segment import segment_regions
 import extractors                # pluggable extractor registry (Step 4)
 import contracts                 # shared schemas — Contract B lives here (Step 7)
@@ -197,6 +197,22 @@ async def analyze(file: UploadFile = File(...),
         if params is None:
             return {"ok": False, "error": "not enough motion data"}
 
+        # (Step 2) the same object mask gates the trajectory FIELD, not just distill's
+        # scalars: a cell that is mostly background is frozen at its start position
+        # instead of integrating background flow. Without this the 12x12 field still
+        # carried the camera pan and the scenery behind the object, so "tracking runs
+        # only inside the masked object" was true of the dials and false of the motion.
+        cell_mask, cells_tracked = None, None
+        if obj_mask is not None:
+            cell_mask, cells_tracked, cells_total = track_cells(obj_mask)
+            if cells_tracked == 0:
+                # a mask thinner than a fifth of a cell everywhere: freezing every cell
+                # would hand back a field with no motion at all, which is worse than an
+                # honestly-labelled unmasked one.
+                cell_mask, cells_tracked = None, None
+                notes.append(f"object mask covers <{int(TRACK_CELL_FLOOR * 100)}% of every "
+                             "grid cell; the trajectory field was left unmasked")
+
         # (2) TRAJECTORY engine — default uses the RAFT-integrated grid
         if tracker:
             te, twhy = extractors.resolve(tracker, extractors.TRAJECTORY)
@@ -206,15 +222,20 @@ async def analyze(file: UploadFile = File(...),
                 try:
                     trajectories = te.load()(frames)
                     used_tracker = te.name
+                    if cell_mask is not None:
+                        # the mask gate is a GRID-cell rule; a point tracker returns its
+                        # own scattered points, so say so rather than implying it applied
+                        notes.append(f"{te.name} tracks its own points; the object mask "
+                                     "gated distill's statistics but not this point set")
                 except Exception as ex:               # graceful fallback to the RAFT grid
-                    trajectories = grid_trajectories(flows)
+                    trajectories = grid_trajectories(flows, cell_mask)
                     used_tracker = "raft-grid"
                     notes.append(f"{te.name} failed, used raft-grid: {ex}")
             else:
-                trajectories = grid_trajectories(flows)
+                trajectories = grid_trajectories(flows, cell_mask)
                 used_tracker = "raft-grid"
         else:
-            trajectories = grid_trajectories(flows)
+            trajectories = grid_trajectories(flows, cell_mask)
             used_tracker = "raft-grid"
 
         # NOTE: segment_regions still runs unmasked. It builds its own per-region pixel
@@ -282,6 +303,12 @@ async def analyze(file: UploadFile = File(...),
                                   if obj_mask is not None else None),
                 "mask_coverage_frame": m.get("coverage"),
                 "mask_method": m.get("method"),
+                # how much of the 12x12 motion field was allowed to track. `null` means
+                # the field was NOT gated (no usable mask, or every cell fell below the
+                # floor) — the one number that separates "masked" from "said masked".
+                "cells_tracked": cells_tracked,
+                "cells_total": GRID * GRID,
+                "cell_floor": TRACK_CELL_FLOOR,
                 # camera SUMMARY only — the full per-frame transform list is 9 floats x
                 # frames and nothing here consumes it; fetch the whole contract from :8772
                 # (POST /preprocess) when you need it.
