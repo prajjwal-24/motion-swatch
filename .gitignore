@@ -48,3 +48,7 @@ setkey.sh
 
 # service logs
 logs/
+
+# Vendored upstream clone (EricGuo5513/momask-codes) + its ~2GB checkpoints — Step 6.
+# Upstream source, not ours: keep it out of history so `git add -A` can never sweep it in.
+service/momask-codes/

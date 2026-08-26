@@ -101,6 +101,7 @@ Each of those precedences is enforced in code and pinned by a test.
 | Suite | Checks | Needs |
 |---|---|---|
 | `service/contracts_selftest.py` | 153 | nothing but the stdlib — runs in all four venvs |
+| `tests/step6-text2motion.py` | 100 | nothing — runs in all four venvs |
 | `tests/step10-orchestration.js` | 65 | node only |
 | `tests/step10-label.py` | 68 | `routervenv` (no credentials) |
 | `tests/step9-judge-loop.py` | 46 | `routervenv` (no credentials) |
@@ -233,10 +234,20 @@ defined, and every cap is *reported* rather than applied silently.
 7. **`:8772` (preprocess) is not called from the browser.** It works and is tested, but the browser
    reaches masking through `preprocess=1` on `:8765` instead — so the standalone service is
    currently only useful from the CLI.
-8. **Step 6 (text → motion) is not built.** `service/extractors.py` has an `mdm` row that still
-   advertises MDM/MotionGPT while what is vendored is `momask-codes`; there is no `service/t2m.py`
-   and no gate test yet. Nothing routes to it, so it cannot silently produce a fake swatch — but
-   the registry row is misleading until retargeted.
+8. **Step 6 (text → motion): no prompt in this repo produces motion.** MoMask's six checkpoints
+   are not vendored and CLIP is not installed, so the done-when *"a person waves" → a rigged
+   character moves* is **not met**. What is shipped is the seam and the format bridge:
+   `service/t2m.py` probes for the specific missing module/file, the registry row now names the
+   repo actually vendored (**EricGuo5513/momask-codes**, not MDM/MotionGPT) with `mdm` kept as an
+   alias, and `resolve_best` walks past it to MediaPipe. `momask22_to_pose13()` converts MoMask's
+   `(T, 22, 3)` SMPL-22 output into Contract B's 13 joints with the same normalisation
+   `pose_server.py` uses — so `load_npy()` will play a `.npy` generated on a machine that *does*
+   have the weights, with no torch and no CLIP. Two disclosed fabrications in that conversion:
+   `nose` is SMPL's **head** joint (SMPL-22 has no nose) and `vis` is 1.0 because generated motion
+   is not observed; `confidence` is **0.0 / `generation_only`**. Root travel is discarded, so the
+   rig animates in place. `generate()` is transcribed from the vendored `gen_t2m.py` and **has
+   never run here**. No text box, no prompt cache, no pre-generated library, no smoothing/retime.
+   `tests/step6-text2motion.py` (100 checks) pins the gate so the gap cannot quietly become a lie.
 9. **The mesh warp is as-rigid-as-possible, not rigid.** 33% p95 residual is a reduction, not an
    elimination; above ~1.8× the lattice spacing the lattice folds and the warp tears. Real captured
    amplitudes are 0.02–0.1, the range it was measured in.

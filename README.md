@@ -190,6 +190,32 @@ transforms, `residual_px`), optional `depth`. **SAM 2** (cleaner masks) and **De
 Anything V2** are gated upgrades behind checkpoints; the download-free default is
 OpenCV Farneback motion-gating. The app calls it via `MotionCapture.preprocessRegion(file, motion)`.
 
+### 6. Text → motion — the seam exists, the model does not (Step 6)
+
+**There is no service to start and no text box in the UI: you cannot type "a person waves" and get
+motion here.** MoMask's checkpoints are not vendored and CLIP is not installed, so the `momask`
+engine probes `False`, names the specific missing file or module, and routing falls back to
+MediaPipe rather than crashing or inventing anything:
+
+```bash
+service/venv/bin/python -c "import sys; sys.path.insert(0,'service'); import t2m; print(t2m.available())"
+# (False, "momask needs the 'clip' module: pip install 'git+https://github.com/openai/CLIP.git'")
+```
+
+What *is* built is `service/t2m.py`: the probe, and a tested converter from MoMask's
+`(T, 22, 3)` SMPL-22 output (metres, Y-up, 20 fps) into Contract B's 13 joints. So a machine that
+already has the weights can save a `.npy` and this repo plays it with **no torch and no CLIP**:
+
+```python
+import t2m; sw = t2m.load_npy("sample.npy", prompt="a person waves")   # -> a valid Contract-B swatch
+```
+
+Two things that conversion fabricates, disclosed in every swatch's `warnings`: `nose` is SMPL's
+**head** joint (SMPL-22 has no nose) and `vis` is 1.0 because generated motion is not observed —
+its `confidence` is `0.0 / generation_only`. Root travel is dropped, so the rig animates in place.
+To finish Step 6: run `service/momask-codes/prepare/download_models.sh` and pip-install CLIP; see
+`docs/BUILD_PLAN.md` Step 6 for the measured probe output and what is still missing.
+
 ---
 
 ## How to use it (demo walkthrough)
@@ -257,6 +283,7 @@ motion-swatch-poc/
 │   ├── contracts.py      # the shared swatch/decompose/label/judge schemas
 │   ├── extractors.py     # engine registry — each engine probes for what it needs
 │   ├── distill.py, flow.py, segment.py, preprocess.py, sam2_seg.py, depth.py, objpath.py
+│   ├── t2m.py            # text → motion: the gate + the SMPL-22 → Contract-B converter
 │   ├── pose_server.py    # MediaPipe pose (8770)
 │   ├── vlm_router.py     # /decompose, /label, /judge (8771)
 │   ├── preprocess_server.py  # standalone mask/depth/camera helper (8772)
@@ -315,6 +342,9 @@ node tests/step2-field.js            # 14  masked-field distillation
 node tests/step8-applicators.js      # 47  dispatch routes on class, never on the layer name
 node tests/step9-sampling.js         # 25  one-cycle frame sampling for the judge
 node tests/step10-orchestration.js   # 65  class-keyed placement + the evidence precedence chain
+
+# the text2motion GATE — asserts an absence behaves; runs in every interpreter
+routervenv/bin/python tests/step6-text2motion.py  # 100 probe says what's missing, routing falls back
 
 # python services driven with a scripted fake VLM — no credentials, no model calls
 routervenv/bin/python tests/step2-preprocess.py   # 38  mask / depth / camera wiring

@@ -235,6 +235,103 @@ motivated it; `boat.mp4` still only covers 42% of its clip and says so in `notes
 
 **Done-when:** "a person waves" → a usable skeletal swatch drives a rigged character.
 
+**Status (the seam is shipped; THE DONE-WHEN IS NOT MET).** There are no MoMask weights in this
+repo and CLIP is not installed, so nothing here can turn a sentence into motion. What was built
+is the honest seam plus the format bridge, so that installing the weights is the *only* remaining
+step — and, until someone does, the gap reports itself instead of being papered over.
+
+**What is shipped.** `service/t2m.py` (new) + a retargeted registry row. `available()` is a real
+probe — `importlib.find_spec` + `os.path.isfile`, no heavy imports, so importing it can never
+break server startup — and it checks the clone, then the five modules, then the six files, in
+that order (telling someone with no clone to start a 2 GB download is a worse answer than telling
+them to clone). Measured in `service/venv`, the venv that actually serves `/engines`:
+
+```
+momask | False | momask needs the 'clip' module: pip install 'git+https://github.com/openai/CLIP.git'
+mdm    | False | momask needs the 'clip' module: pip install 'git+https://github.com/openai/CLIP.git'
+missing checkpoints: 6 of 6
+  checkpoints/t2m/rvq_nq6_dc512_nc512_noshare_qdp0.2/model/net_best_fid.tar
+  checkpoints/t2m/t2m_nlayer8_nhead6_ld384_ff1024_cdp0.1_rvq6ns/model/latest.tar
+  checkpoints/t2m/tres_nlayer8_ld384_ff1024_rvq6ns_cdp0.2_sw/model/net_best_fid.tar
+  checkpoints/t2m/length_estimator/model/finest.tar
+  checkpoints/t2m/rvq_nq6_dc512_nc512_noshare_qdp0.2/meta/{mean,std}.npy
+```
+
+and the fallback, also measured, is the Step-0 rule working:
+
+```
+resolve_best('articulated', {subject_type: human, has_text_prompt: True}) -> pose_mediapipe
+  (skipped momask: momask needs the 'clip' module …, wham: clone yzhu.io/WHAM + weights)
+```
+
+**The registry row was wrong and is now right.** It read `"MDM/MotionGPT — … clone
+GuyTevet/motion-diffusion-model + weights"` while what is actually vendored at
+`service/momask-codes` is **EricGuo5513/momask-codes** (MoMask, CVPR 2024) at commit `94a6636` —
+a different model, a different repo, a different download. It was also a `_stub`, so its probe
+could only ever say "gated engine not set up" without naming what was missing. It is now a real
+`Engine` over `t2m.available()`/`t2m.generate`, and `mdm` survives as an explicit **alias
+Engine** (not an alias map — `resolve_best` silently `continue`s past names absent from
+`REGISTRY`, so an alias map would make a stale routing row vanish without a word). Both
+`articulated` text-prompt routing rows now name `momask`; the **animal** row lost its
+text2motion entry entirely, because MoMask is HumanML3D-trained — "a cat stretches" would come
+back as a person doing something roughly cat-shaped, and the old row had `mdm` there with the
+same problem.
+
+**The format bridge is real code and is tested.** `momask22_to_pose13()` converts MoMask's
+`(T, 22, 3)` SMPL-ordered output — metres, **Y UP**, ground on XZ, **20 fps** (all four read out
+of the vendored `gen_t2m.py` and `utils/paramUtil.py`, not from memory) — into Contract B's 13
+joints. It is numpy-free, so it runs in all four interpreters. Three decisions worth naming:
+- **The 13 indices are `[15, 16, 17, 18, 19, 20, 21, 1, 2, 4, 5, 7, 8]`**, and `nose ← 15` is
+  SMPL's **head**. SMPL-22 has no nose. The rig reads `jn.nose` for head bob, so dropping it
+  would break the rig — but it is a **substitution, not a measurement**, and every converted
+  swatch says so in `warnings`, along with the 9 dropped joints (`0, 3, 6, 9, 10, 11, 12, 13, 14`
+  = pelvis, spine1–3, both feet, neck, both collars).
+- **Normalisation is byte-for-byte `pose_server.py:60-68`** — per-frame joint bbox, `bw =
+  max(1e-3, …)`, `round(…, 4)`. Not a stylistic choice: a second convention would make a
+  generated swatch and a captured one mean different things to the same rig. The consequence,
+  disclosed per swatch, is that **root travel is discarded** and the rig animates in place. Pinned
+  by a test that feeds frame 1 a translated + 3×-scaled copy of frame 0 and requires identical
+  output.
+- **`confidence` is 0.0 with `confidence_of = "generation_only"`** (new
+  `contracts.GENERATED_CONFIDENCE`; `CONFIDENCE_MEANINGS` widens the acceptance check). Generated
+  motion has no observation, so `mean_visibility` would be a lie and a plausible 0.9 would be a
+  worse one. `vis` is 1.0 on every joint for the same reason, and says so.
+
+**`load_npy()` is the path that works today.** `gen_t2m.py` saves exactly `(T, 22, 3)`, so a
+machine that already has the weights can produce a `.npy` and this repo consumes it into a valid
+Contract-B swatch with **no weights, no CLIP and no torch** — numpy alone. That is real generated
+motion arriving through the real seam; it just isn't a prompt typed into this app.
+
+**Verified:** `tests/step6-text2motion.py` — **100 checks, green in all four interpreters**
+(`routervenv`, `service/venv`, `mpvenv`, `/usr/bin/python3`), no service and no credentials. Most
+of it asserts an *absence behaving*: the probe is False and its reason names a specific missing
+module or file (not the generic hint), `t2m.py` has no heavy module-level import, `generate()`
+**raises** rather than returning a plausible skeleton, `?engine=mdm` is still *recognised* (not
+`"not a registered text2motion engine"`), and `resolve_best` falls back to `pose_mediapipe` with
+momask's specific gap in the reason. The rest checks the converter against hand-computed values:
+index mapping, the Y flip (highest SMPL joint → smallest screen y), per-frame normalisation, the
+1e-3 floor on a collapsed frame, short/junk frames becoming `null` **gaps** rather than
+zeros-posing-as-a-pose, every disclosure present, and `validate_swatch()` passing.
+
+**Not shipped — and this is the done-when.** No prompt in this repo produces motion. Also not
+done: the prompt→clip **cache**, the "small pre-generated library for the demo", and the
+**smooth + retime + loop-optimize** the plan asks for (there is no generated sequence to smooth,
+and writing a smoother against zero real output would be untested code). No UI: there is no text
+box, and `js/` never calls this. `generate()` itself is transcribed faithfully from the vendored
+`gen_t2m.py` (length estimator → `t2m_transformer.generate` → `res_model.generate` →
+`vq_model.forward_decoder` → `inv_transform` → `recover_from_ric(…, 22)`) but **has never been
+executed here**, which is stated in its own docstring rather than left for whoever installs the
+weights to discover.
+
+**Exactly what would meet it:** clone/keep `service/momask-codes`, run its
+`prepare/download_models.sh` (the six files above), `pip install
+'git+https://github.com/openai/CLIP.git'` into `service/venv` — then `available()` flips True,
+`resolve_best` stops skipping momask, and `swatch_from_joints(generate("a person waves"))` yields
+a swatch the existing character rig already knows how to play. **What would NOT meet it, and was
+deliberately not done: hand-authoring a wave cycle and returning it from the text2motion
+engine.** That would make the registry lie about which numbers came from a model, which is the
+one thing the registry exists to prevent.
+
 ---
 
 ## Step 7 — Distill → unified swatch schema

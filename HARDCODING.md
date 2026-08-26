@@ -184,6 +184,14 @@ Once wrapped, selection and animation are fully general — and since Step 10 th
   mitigates this but does not remove it.
 - **A gated engine that isn't installed probes `False` with a setup hint and falls back**, rather
   than pretending or crashing.
+- **Text → motion is not implemented, and there is no hand-written stand-in for it.** MoMask's
+  weights aren't vendored and CLIP isn't installed, so `service/t2m.py` names the specific missing
+  file or module, `generate()` **raises**, and routing walks past it to MediaPipe. The tempting
+  hardcode here would have been a hand-authored wave cycle returned from the text2motion engine —
+  it was deliberately not written, because that would make `/engines` lie about which numbers came
+  from a model. `load_npy()` will play a real MoMask `.npy` produced elsewhere; the two things its
+  conversion fabricates (`nose` = SMPL's head joint, `vis` = 1.0) are in every swatch's
+  `warnings`, and its `confidence` is `0.0 / generation_only`.
 
 ---
 

@@ -297,6 +297,17 @@ SUBJECT_EDGES = {"pose": POSE_EDGES, "hands": HAND_EDGES, "face": []}
 CONFIDENCE_OF = {"pose": "mean_visibility", "hands": "handedness_score",
                  "face": "detection_ratio"}
 
+# (Step 6) A GENERATED skeleton has no observation behind it, so none of the meanings
+# above apply: there is no visibility to average and no detection to count. It gets its
+# own label rather than borrowing "mean_visibility", which would read as a measurement.
+# Deliberately NOT a fourth entry in CONFIDENCE_OF — that table is per SUBJECT (a
+# generated pose is still subject "pose"), and adding a fake subject to carry a
+# provenance fact would corrupt SUBJECT_JOINTS/SUBJECT_EDGES lookups.
+GENERATED_CONFIDENCE = "generation_only"
+
+# Every meaning `confidence_of` may carry on a skeleton payload.
+CONFIDENCE_MEANINGS = tuple(CONFIDENCE_OF.values()) + (GENERATED_CONFIDENCE,)
+
 
 def empty_skeleton_swatch(subject, engine=""):
     subject = subject if subject in SUBJECTS else "pose"
@@ -344,7 +355,7 @@ def normalize_skeleton_swatch(raw):
     out["viewpoint"] = vp
     out["fps"] = int(_as_float(raw.get("fps"), 15)) or 15
     out["confidence"] = round(_clamp01(_as_float(raw.get("confidence"), 0.0)), 3)
-    if raw.get("confidence_of") in CONFIDENCE_OF.values():
+    if raw.get("confidence_of") in CONFIDENCE_MEANINGS:
         out["confidence_of"] = raw["confidence_of"]
     frames = raw.get("frames") if isinstance(raw.get("frames"), list) else []
     out["frames"] = frames
