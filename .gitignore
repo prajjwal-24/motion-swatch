@@ -32,7 +32,13 @@ mpvenv/
 routervenv/
 
 # Local secrets (copy .env.example -> .env)
+# .env.bak / .env.tmp.* are written by setkey.sh and hold real key values, so they
+# must be ignored too — plain `.env` does NOT match them. `.env.example` is tracked
+# (it holds variable NAMES only) and is re-included below.
 .env
+.env.bak*
+.env.tmp.*
+!.env.example
 
 # Vendored SEA-RAFT clone (opt-in engine; run service/setup-searaft.sh)
 service/SEA-RAFT/
