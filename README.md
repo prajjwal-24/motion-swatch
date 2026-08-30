@@ -263,7 +263,7 @@ out; the 734 MB `CompleteDemo.mp4` is excluded by name as well.
 motion-swatch-poc/
 ├── index.html            # app shell + panel layout
 ├── css/style.css
-├── start-all.sh          # bring up / stop / status all four services
+├── start-all.sh          # bring up / stop / status all five ports (8000 + the four services)
 ├── js/
 │   ├── motions.js        # 9 built-in motion presets
 │   ├── capture.js        # video → analysis service (or in-browser fallback)
@@ -320,6 +320,7 @@ app falls back to wrapping top-level drawable clusters automatically.
   rigid Moving Least Squares mesh warp (Schaefer, McPhail & Warren 2006) over the captured field.
 
 See `docs/BUILD_PLAN.md` for what each step ships and the measurements behind it,
+`docs/TESTING.md` for how to test each piece and what output to expect,
 `docs/ARCHITECTURE_FLOW.md` for the module/flow detail, `HARDCODING.md` for what is curated, and
 `DEMO_SCRIPT.md` for the demo narrative.
 
@@ -329,6 +330,10 @@ See `docs/BUILD_PLAN.md` for what each step ships and the measurements behind it
 
 Most of the suite needs **no browser, no service, and no credentials** — that is deliberate, so a
 contract change breaks loudly on a laptop with nothing running.
+
+**`docs/TESTING.md` is the full guide**: what to run at each tier (no-services → services →
+credentialed → browser), the measured output to expect from each, and a triage order for when
+something looks wrong. The commands below are the short version.
 
 ```bash
 # pure contracts — runs in every interpreter in the repo (153 checks each)
